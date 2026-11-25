@@ -1,0 +1,11 @@
+# 仓库里统一用 LF：源码在 Windows 与 CI 上走同一份字节。
+* text=auto eol=lf
+
+# 二进制原样，不做行尾与文本处理。
+*.img  binary
+*.bin  binary
+*.a    binary
+*.ttf  binary
+*.zip  binary
+*.jar  binary
+*.apk  binary

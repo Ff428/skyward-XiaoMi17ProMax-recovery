@@ -1,0 +1,294 @@
+name: Build
+
+# 运行记录的名字：默认是「这一条提交的整句说明」，一长串中文会把 Actions 列表塞满
+# （同一条提交被反复推还会留下同名的一堆）。这里固定成标签名 / 分支名：
+# tag 推上去是 `v6`，推 main 是 `main`（2026-11-25 用户要的，别再显示那些中文）。
+run-name: ${{ github.ref_name }}
+
+# 只构建 Xiaomi 17 Pro Max（popsicle）这一台。推 main 只编译验证（产物随 job 走完就不留）；
+# 打 v* 标签才出 zip 并发 Release，**一次标签同时发品牌版与官方版两套**。
+#
+# 2026-11-24 精简：删掉了 sync-upstream / watch-upstream 两个 workflow —— 不再跟上游。
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  DEVICE: popsicle
+  # 产物名固定（用户 2026-11-24 定的）：版本号只进 tag 与 Release 标题，不进文件名。
+  NAME: skyward-OS4.0.8.0-XiaoMi17ProMax
+
+jobs:
+  tools:
+    name: Build the recovery service and the packer
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - name: Build the recovery service for the phone
+        run: cargo ndk -t arm64-v8a --platform 30 build --locked --release -p skyward
+      # 它是第二系统的第一个程序，任何库都还没得加载，所以静态链接。
+      - name: Build the second system's first program, static
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo ndk -t arm64-v8a --platform 30 build --locked --release -p skyward-system-init --target-dir target/system-init
+      - name: Build the packer
+        run: cargo build --locked --release -p skyward-pack
+      - name: Gather them
+        run: |
+          mkdir tools
+          cp target/aarch64-linux-android/release/skyward target/release/skyward-pack tools/
+          cp target/system-init/aarch64-linux-android/release/system-init tools/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: skyward-tools
+          path: tools/
+          if-no-files-found: error
+          retention-days: 1
+
+  tests:
+    name: Unit tests (crypto / config / modules)
+    runs-on: ubuntu-24.04
+    # 只报结果，不挡发布。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      # 只跑与环境无关的三个 crate。`skyward-ui` 的 454 条测试要本机环境：
+      #   - 时区（fmt 的日历断言按 +8 写，runner 是 UTC，四十几条全差 18 小时）；
+      #   - 字体与帧缓冲（icons/sprite/surface 量的是像素与字形）；
+      #   - vendored 的 AOSP 拼音是 C++，debug 构建下会 glibc double free，一出事
+      #     整个测试进程 abort，几百条不相干的测试跟着变红（2026-11-24 逐条查到）。
+      # 本机跑法：`cargo test --locked -p skyward-ui --lib`（unix 上带拼音引擎）。
+      - name: Run the tests of the crates that run on any machine
+        run: cargo test --locked -p skyward-crypto -p skyward-config -p skyward-modules
+
+  recovery:
+    name: Recovery for popsicle (${{ matrix.brand }})
+    needs: [tools]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 默认常量就是品牌版（`pages.rs` 里 HOME_TITLE 等的 fallback），不用换环境变量。
+          - brand: brand
+            suffix: ""
+            title: ""
+            author: ""
+            wordmark: ""
+          - brand: official
+            suffix: "-official"
+            title: Skyward
+            author: © 2026 Skyward
+            wordmark: Skyward
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v8
+        with:
+          name: skyward-tools
+          path: tools
+      - name: Make the tools runnable
+        run: chmod +x tools/skyward tools/skyward-pack
+      # 官方版要带品牌常量重新编一次 skyward：`option_env!` 只在编译期看环境变量，
+      # 光改打包参数没有用（`pages.rs` 的常量在库里）。
+      - name: Rebuild the recovery service with the official wordmark
+        if: matrix.suffix != ''
+        env:
+          SKYWARD_BRAND_TITLE: ${{ matrix.title }}
+          SKYWARD_BRAND_AUTHOR: ${{ matrix.author }}
+          SKYWARD_BRAND_WORDMARK: ${{ matrix.wordmark }}
+        run: |
+          touch crates/skyward-ui/src/pages.rs
+          cargo ndk -t arm64-v8a --platform 30 build --locked --release -p skyward
+          cp target/aarch64-linux-android/release/skyward tools/skyward
+      - name: Read the stock build the recovery is made on
+        id: stock
+        run: tools/skyward-pack stock --config "devices/$DEVICE.toml" >> "$GITHUB_OUTPUT"
+      - name: Restore the stock recovery
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: stock/recovery.img
+          key: stock-recovery-${{ steps.stock.outputs.version }}
+      # 官方包有好几个 GB，这里只取出 recovery 分区。
+      - name: Take the recovery partition out of the stock package
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: tools/skyward-pack stock --config "devices/$DEVICE.toml" --out stock/recovery.img
+      - name: Check the stock recovery
+        env:
+          RECOVERY: ${{ steps.stock.outputs.recovery }}
+        if: steps.stock.outputs.recovery != ''
+        run: echo "$RECOVERY  stock/recovery.img" | sha256sum --check
+      # 官方 recovery 的 ramdisk 里没有 sbin 那套 HAL（qseecomd / keymint /
+      # gatekeeper / weaver / secure_element / se_omapi / boot-service）、
+      # 没有配套的 system/lib64 库、也没有 CS40L26 的 DSP 固件。缺了它们
+      # 解不开 /data、震动也起不来，所以打包前先把补丁层补进去。
+      - name: Add the HAL layer the stock ramdisk leaves out
+        run: |
+          pip3 install --break-system-packages -q lz4
+          python3 scripts/augment_stock.py --stock stock/recovery.img \
+            --hal resources/popsicle/recovery-hal.zip --out stock/base.img
+      - name: Pack the recovery
+        id: pack
+        env:
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          name="${NAME}${SUFFIX}"
+          mkdir -p out
+          tools/skyward-pack recovery --stock stock/base.img --binary tools/skyward --system-init tools/system-init \
+            --config "devices/$DEVICE.toml" --font resources/fonts/MiSansVF.ttf --mono resources/fonts/KirkMono-Regular.ttf \
+            --mono-license resources/fonts/KirkMono-OFL.txt \
+            --emoji resources/fonts/NotoColorEmoji.ttf --emoji-flags resources/fonts/NotoColorEmojiFlags.ttf \
+            --emoji-license resources/fonts/NotoColorEmoji-OFL.txt \
+            --out "out/$name.img"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      # 自检：条目数、补丁层关键文件、AVB 自洽。任何一项不过就让构建红掉。
+      - name: Check the packed image
+        env:
+          NAME: ${{ steps.pack.outputs.name }}
+        run: python3 scripts/check_build.py --img "out/$NAME.img"
+      # 镜像整分区刷入，大部分是 recovery 留空的余量，压缩后再发。
+      - name: Zip the image
+        working-directory: out
+        env:
+          NAME: ${{ steps.pack.outputs.name }}
+        run: zip -9 "$NAME.zip" "$NAME.img"
+      # 打 tag 才留：推 main 的 run 只做编译与自检，不往仓库里堆产物。
+      # 裸镜像与 zip 一起留 —— release 里两样都要放，发布后不必再手工补 img。
+      # 先拷到一个扁平目录再上传：artifact 里带上 `out/` 前缀的话，下载下来是
+      # `images/out/xxx`，release job 里的 `images/$NAME.img` 就找不到文件。
+      - name: Collect what the release takes
+        if: github.ref_type == 'tag'
+        env:
+          NAME: ${{ steps.pack.outputs.name }}
+        run: |
+          mkdir -p dist
+          # 只放裸镜像。artifact 自己就是一个 zip，再塞 zip 进去，下载下来
+          # 就是「压缩包里还有压缩包」（2026-11-24 用户问过）。zip 由发布那一步压。
+          cp "out/$NAME.img" dist/
+      - uses: actions/upload-artifact@v7
+        if: github.ref_type == 'tag'
+        with:
+          # 名字直接用产物名 —— 页面上看到的就是
+          # `skyward-OS4.0.8.0-XiaoMi17ProMax`（官方版带 `-official`），
+          # 不是内部代号 `image-brand` 那种（2026-11-24 用户问过为什么叫这个）。
+          name: ${{ steps.pack.outputs.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish the release
+    # 一个 tag 一个 release。以前这里建两个（`<tag>` 与 `<tag>-official`），
+    # GitHub 为后者自动创建 tag，于是又触发一次 run、再建出
+    # `<tag>-official-official` —— 一路递归下去（2026-11-24 真发生了）。
+    # 现在两版都放进同一个 release 的资产里。
+    if: github.ref_type == 'tag'
+    needs: [recovery]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: docs
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: skyward-*
+          path: images
+          merge-multiple: true
+      # 版本说明跟着发布走：docs/CHANGELOG.md 拷成 release 的资产，
+      # 这样在 Releases 页面就能读到每一版改了什么。
+      - name: Take the release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: cp "docs/CHANGELOG.md" "images/$TAG-release-notes.md"
+      - name: Sum the two images
+        working-directory: images
+        run: |
+          # 发行版只放两个裸镜像。以前还各压了一份 zip，页面上于是出现四个
+          # 「镜像」—— 那两个 zip 里装的就是同样的 img，只是多一层包装
+          # （2026-11-24 用户问「不应该是两个吗」）。要刷 zip 的话自己压：
+          #   zip -9 -j skyward-….zip skyward-….img
+          sha256sum -- "$NAME.img" "$NAME-official.img" > "SHA256SUMS"
+          cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          {
+            echo "小米 17 Pro Max（\`popsicle\`，底座 \`OS4.0.6.0.XPBCNXM\`）。同一棵树、同一份源码，两版只差品牌字。"
+            echo
+            echo "| 文件 | 是什么 |"
+            echo "|---|---|"
+            echo "| \`$NAME.img\` | 品牌版，首页与关于页写「卑鄙坑Baby」 |"
+            echo "| \`$NAME-official.img\` | 官方版，首页与关于页写 Skyward |"
+            echo
+            echo "校验：\`sha256sum -c SHA256SUMS\`。刷入、校验、从源码重建见 README。"
+            echo
+            echo "文件名里的 \`4.0.8.0\` 是交付代号，底座是 \`OS4.0.6.0.XPBCNXM\`（见 docs/CHANGELOG.md）。"
+          } > notes.md
+          # 幂等：tag 移动、或同一 tag 重跑一次时，不要因为「release 已存在」就炸。
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber               "images/$NAME.img" "images/$NAME-official.img" "images/SHA256SUMS" "images/$GITHUB_REF_NAME-release-notes.md"
+          else
+            gh release create "$GITHUB_REF_NAME"               --title "$GITHUB_REF_NAME — 小米 17 Pro Max (popsicle, OS4.0.6.0)"               --notes-file notes.md               "images/$NAME.img" "images/$NAME-official.img" "images/SHA256SUMS" "images/$GITHUB_REF_NAME-release-notes.md"
+          fi
+          # 清单里没有的资产删掉：`upload --clobber` 只覆盖同名，上一次留下的
+          # zip 之类会一直挂在那儿（2026-11-24 页面上于是有四个「镜像」）。
+          keep="$NAME.img $NAME-official.img SHA256SUMS $GITHUB_REF_NAME-release-notes.md"
+          gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name' | while read -r a; do
+            case " $keep " in
+              *" $a "*) ;;
+              *) gh release delete-asset "$GITHUB_REF_NAME" "$a" --yes ;;
+            esac
+          done
+          # 收尾：标题、说明、公开状态、Latest 都在这里统一对齐。
+          # 只走 `upload --clobber` 的话只会换文件，标题与说明仍是上一次的
+          # （2026-11-24 改了标题却没生效，就是这么来的）；`draft=True` 那次
+          # 也是在这一步被强制拉回公开。
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest             --title "$GITHUB_REF_NAME — 小米 17 Pro Max (popsicle, OS4.0.6.0)"             --notes-file notes.md
+
+  # 列表里只留这一次运行：本 workflow 更早的那些（被新推送取消的、重推标签留下的）
+  # 跑完后自己删掉。不然 Actions 页面上是一串同名的记录，全是同一句提交说明。
+  prune:
+    name: Keep one run in the list
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Delete the finished runs of this workflow, except this one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEEP: ${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          gh run list --workflow build.yml --limit 100 \
+            --json databaseId,status \
+            --jq '.[] | select(.status == "completed") | .databaseId' |
+          while read -r id; do
+            if [ -z "$id" ]; then continue; fi
+            if [ "$id" = "$KEEP" ]; then continue; fi
+            if gh api -X DELETE "repos/$GH_REPO/actions/runs/$id" >/dev/null 2>&1; then
+              echo "deleted run $id"
+            else
+              echo "kept run $id (could not delete)"
+            fi
+          done
+          gh run list --workflow build.yml --limit 10
