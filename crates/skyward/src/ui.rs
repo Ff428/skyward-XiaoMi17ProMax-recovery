@@ -5695,6 +5695,9 @@ grep_prop() {
 set_perm() {
   chown "$2:$3" "$1" 2>/dev/null
   chmod "$4" "$1" 2>/dev/null
+  if [ -n "$5" ]; then
+    chcon "$5" "$1" 2>/dev/null
+  fi
   return 0
 }
 set_perm_recursive() {
@@ -5755,12 +5758,23 @@ fn install_module(path: &str) -> Result<String, String> {
     }
 
     let dest = std::path::Path::new(MODULES).join(&id);
+    // Magisk / KernelSU 装模块时 `$MODPATH` 按脚本自己的意思来：LSPosed 这类
+    // 声明了 `SKIPUNZIP=1`，脚本从 zip 里 `unzip` 哪个它才进模块目录。所以这里
+    // 也分两个目录 —— `stage` 是整份解开的 zip（stub unzip 的源），`staging`
+    // 才是最终模块目录。以前把整份 zip 直接解进 `$MODPATH`，LSPosed 目录里就
+    // 多出别的架构的 dex2oat、`machikado.*`、`lib/arm64-v8a/libframework.so`
+    // 这些原始路径副本，lspd 一启动就在 native 段 SIGSEGV；用 KernelSU 自己的
+    // 安装器装同一份 zip 就没有这些，lspd 正常运行（2026-11-25）。
+    let work = std::path::Path::new(WORK);
+    let _ = std::fs::remove_dir_all(work);
+    let stage = work.join("zip");
     let staging = std::path::Path::new(MODULES).join(format!(".{id}.staging"));
-    if staging.exists() {
-        std::fs::remove_dir_all(&staging).map_err(|e| format!("clear {}: {e}", staging.display()))?;
+    for dir in [&stage, &staging] {
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).map_err(|e| format!("clear {}: {e}", dir.display()))?;
+        }
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    std::fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
-    // 整份解开：安装脚本要自己挑文件，先摆成它以为的样子。
     for i in 0..zip.len() {
         let (name, mode, data) = {
             let mut entry = zip.by_index(i).map_err(|e| format!("{path}: {e}"))?;
@@ -5776,7 +5790,7 @@ fn install_module(path: &str) -> Result<String, String> {
         if rest.is_empty() || name.ends_with('/') {
             continue;
         }
-        let at = staging.join(rest);
+        let at = stage.join(rest);
         if let Some(parent) = at.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -5786,10 +5800,16 @@ fn install_module(path: &str) -> Result<String, String> {
     }
 
     // 带安装脚本的：跑一遍，让它自己挑架构、摆 zygisk 目录、改可执行位。
-    let customize = staging.join("customize.sh");
+    let customize = stage.join("customize.sh");
+    let skip_unzip = customize.exists()
+        && std::fs::read_to_string(&customize)
+            .map(|text| text.lines().any(|line| line.trim().starts_with("SKIPUNZIP=1")))
+            .unwrap_or(false);
+    // 没声明 SKIPUNZIP 的照 Magisk 的默认行为：整份先进模块目录，脚本再动它。
+    if !skip_unzip {
+        copy_tree(&stage, &staging)?;
+    }
     if customize.exists() {
-        let work = std::path::Path::new(WORK);
-        let _ = std::fs::remove_dir_all(work);
         std::fs::create_dir_all(work.join("bin")).map_err(|e| format!("{}: {e}", work.display()))?;
         write_script(&work.join("bin/unzip"), STUB_UNZIP)?;
         write_script(&work.join("bin/magisk"), STUB_MAGISK)?;
@@ -5806,12 +5826,12 @@ fn install_module(path: &str) -> Result<String, String> {
             .replace("@API@", api.trim())
             .replace("@MODPATH@", &staging.to_string_lossy())
             .replace("@TMPDIR@", &work.to_string_lossy())
-            .replace("@STAGE@", &staging.to_string_lossy())
+            .replace("@STAGE@", &stage.to_string_lossy())
             .replace("@ZIPFILE@", path)
             .replace("@BIN@", &work.join("bin").to_string_lossy());
         write_script(&work.join("env.sh"), &env)?;
         // 脚本常拿 Magisk 预放进 TMPDIR 的 module.prop 报一句版本号。
-        let _ = std::fs::copy(staging.join("module.prop"), work.join("module.prop"));
+        let _ = std::fs::copy(stage.join("module.prop"), work.join("module.prop"));
         let line = format!("cd /; . {}; . {}", shq(&work.join("env.sh")), shq(&customize));
         let out = std::process::Command::new("/system/bin/sh")
             .arg("-c")
@@ -5822,6 +5842,10 @@ fn install_module(path: &str) -> Result<String, String> {
         let lines: Vec<&str> = said.lines().collect();
         for one in lines.iter().rev().take(12).rev() {
             let _ = skyward_sys::kmsg(&format!("module: {one}"));
+        }
+        // 脚本没把 module.prop 自己 extract 进去的（有些模块忘了），补一份。
+        if !staging.join("module.prop").exists() {
+            let _ = std::fs::copy(stage.join("module.prop"), staging.join("module.prop"));
         }
         let _ = std::fs::remove_dir_all(work);
         if !out.status.success() {
@@ -5851,6 +5875,25 @@ fn install_module(path: &str) -> Result<String, String> {
     }
     std::fs::rename(&staging, &dest).map_err(|e| format!("move into {}: {e}", dest.display()))?;
     Ok(id)
+}
+
+/// 把一棵目录原样搬一份（权限跟着走）。
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(to).map_err(|e| format!("{}: {e}", to.display()))?;
+    for entry in std::fs::read_dir(from).map_err(|e| format!("{}: {e}", from.display()))? {
+        let entry = entry.map_err(|e| format!("{e}"))?;
+        let path = entry.path();
+        let at = to.join(entry.file_name());
+        let meta = entry.metadata().map_err(|e| format!("{}: {e}", path.display()))?;
+        if meta.is_dir() {
+            copy_tree(&path, &at)?;
+        } else {
+            std::fs::copy(&path, &at).map_err(|e| format!("{}: {e}", at.display()))?;
+            let _ = std::fs::set_permissions(&at, std::fs::Permissions::from_mode(meta.permissions().mode()));
+        }
+    }
+    Ok(())
 }
 
 /// 把一段脚本写成可执行文件。
