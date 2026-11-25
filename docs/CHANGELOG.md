@@ -9,6 +9,55 @@ CI 发布的 `<tag>-release-notes.md` 就是这份文件。
 
 ---
 
+# v2
+
+真机全量点验之后的一批修正。用户直接报的三条都在这里（模块装不上、无线关掉再开不连、
+AVB 页两张卡片贴死），全部在真机上验过。
+
+## 模块安装
+
+- **模块 zip 不再被当成刷机包**。文件管理里点一个既有 `module.prop` 又有
+  `META-INF/com/google/android/update-binary` 的 zip（LSPosed 就是），以前会去跑那段
+  update-binary，报「安装脚本运行失败，退出码为 1」。现在先看 zip 里有没有
+  `module.prop`，有就按模块装：解进 `/data/adb/modules/<id>`，带 `customize.sh` 的
+  照 Magisk 的方式跑一遍（`ui_print` / `abort` / `grep_prop` / `set_perm` 由这里给，
+  脚本里那句 `unzip` 换成从已经解开的树上搬），装完页面报「模块已安装 / 下次启动时加载」。
+- **XZ 压缩的条目能解了**。模块里的 `module.prop`、`customize.sh`、`lspd` 常用 XZ
+  （zip method 95），toybox 的 `unzip` 只会 `compression method not supported: 95`。
+  给 `zip` 打开 `xz` feature，整份包先由 recovery 解开。
+- **`$MODPATH` 只放脚本自己 `extract` 的东西**。LSPosed 的 `customize.sh` 声明了
+  `SKIPUNZIP=1`，Magisk / KernelSU 都只把它搬出来的文件放进模块目录；以前这里把整份
+  zip 解进去，目录里多出 `lib/arm64-v8a/libframework.so`、`bin/arm64-v8a/dex2oat`、
+  `machikado.arm` 这些原始路径副本，`lspd` 一启动就在 native 段 SIGSEGV（`code=139`）。
+  现在拆成 stage（整份解开的 zip，给脚本里的 `unzip` 当源）与 `$MODPATH` 两个目录，
+  装完的目录与 KernelSU 装的逐项一致。
+- `set_perm` 补上第 5 个参数（SELinux context，LSPosed 给 `bin/dex2oat` 写的是
+  `u:object_r:dex2oat_exec:s0`）。
+
+## 无线
+
+- **关掉再打开会自己连回来**。以前 `wlan_joined` 一旦置上，自动连接那一支就再也不进，
+  radio 起来了却没人去连。现在按开关复位这一轮的状态，从名单第一张重新试。
+- **首页照实说连不上的原因**：密码错、范围内没有这张、连接失败、拿不到 IP 各有各的
+  说法，不再一律「正在连接」。
+- 详情页里没扫到的网络，信号强度写「未知」，不写「极佳」。
+
+## 界面
+
+- **AVB 页**：「备份当前槽的 vbmeta」与下面那份备份列表之间补了一道卡片间距
+  （`card_gap`），以前两张卡片上下贴死。
+- **无线传输**：没连 WLAN 时不再显示 `http://<phone>:8080/` 这个字面占位符。
+- **一个输入设备读失败不再让整块屏幕哑掉**：放掉那个设备、重扫 `/dev/input`、
+  需要时补发按下，不牵连其它设备。
+
+## 真机验过的
+
+`recovery_a` 刷入后逐页点验；模块先用 KernelSU 卸载、再从 REC 重装，重启进系统
+`lspd` 在跑、LSPosed 管理器显示「已激活 2.2.1 (7949)」、Xposed 模块在
+`com.android.settings` 里完成 hook；WLAN 关 → 开 16 秒内连回 `F1_5G` 并拿到
+`192.168.1.8`；AVB 页对齐；`logcat` 里 skyward 进程 0 条 E/F，`dmesg` 无
+`oops/panic/BUG/watchdog/kasan`。
+
 # v1
 
 本仓库从零建立（旧的开发仓库已删除）。源码按当前功能整理过一遍：编译零警告、
