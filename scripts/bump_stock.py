@@ -40,7 +40,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote
 
 WORK = Path(__file__).resolve().parents[1]
-REPO = 'Ff428/skyward-recovery'
+REPO = 'Ff428/skyward-XiaoMi17ProMax-recovery'
 BRANCH = 'main'
 PROXY = 'http://127.0.0.1:7890'
 INDEX = 'https://xmfirmwareupdater.com/hyperos/popsicle/'

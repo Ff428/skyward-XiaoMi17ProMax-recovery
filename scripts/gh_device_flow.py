@@ -67,7 +67,7 @@ def make_post(use_proxy: bool):
         data = urllib.parse.urlencode(fields).encode()
         req = urllib.request.Request(url, data=data, method="POST")
         req.add_header("Accept", "application/json")
-        req.add_header("User-Agent", "skyward-recovery-devtool")
+        req.add_header("User-Agent", "skyward-XiaoMi17ProMax-recovery-devtool")
         with opener.open(req, timeout=30) as r:
             return json.loads(r.read())
 

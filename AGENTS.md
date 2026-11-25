@@ -4,7 +4,7 @@
 上游 [kirklin/skyward](https://github.com/kirklin/skyward)，功能补丁来自
 [mariusarva/skyward-pudding](https://github.com/mariusarva/skyward-pudding)。
 
-**本仓库是 `Ff428/skyward-recovery`（公开），不是 fork**：源码按当前功能重建过一遍，
+**本仓库是 `Ff428/skyward-XiaoMi17ProMax-recovery`（公开），不是 fork**：源码按当前功能重建过一遍，
 历史只有一个初始提交，外部 tag 不是 HEAD 的祖先。要借别人的东西按内容抄，**不要 `git merge`**。
 
 2026-11-24 起不再跟上游：布丁的功能已全部搬完，只在这里往前走。
