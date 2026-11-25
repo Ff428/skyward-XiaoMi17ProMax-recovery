@@ -281,6 +281,11 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
         return Ok(Opening { mounted, closed: Vec::new() });
     }
     at(400);
+    // The key for the files that belong to no user comes first, and the key for
+    // each user's files after it: the folder the users' keys are in is itself
+    // kept by the first key, so reading it before that key is in answers
+    // ENOENT — which is what running the two at once did on 2026-11-25. The
+    // two are 0.13 s together, and the second cannot start before the first.
     timed("the key for the files that belong to no user", || open_shared(service))?;
     at(470);
     let users = timed("the key for each user's files", || open_users(service))?;
@@ -300,7 +305,12 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
         let protector = timed(&format!("reading user {user}'s screen lock"), || protector(user))?;
         match protector.lock {
             None => {
-                let note = timed(&format!("opening user {user}'s own files"), || open_user_files(service, user, None, None))?;
+                // A note is only wanted where some user is kept behind this one,
+                // and which those are is not known before the loop is done:
+                // this one is asked for and kept for the owner.
+                let note = timed(&format!("opening user {user}'s own files"), || {
+                    open_user_files(service, user, None, None, user == OWNER)
+                })?;
                 if user == OWNER {
                     owner = note;
                 }
@@ -320,11 +330,18 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
 /// the phone made up behind theirs; give those still closed.
 pub fn unlock(service: &KeyMint, closed: &[Closed], user: u32, credential: &[u8]) -> Result<Vec<Closed>> {
     at(700);
+    let rest: Vec<Closed> = closed.iter().filter(|c| c.user != user).cloned().collect();
+    // Only a user the phone made a credential up for is opened behind the
+    // owner's note, and where there is none the note is not asked for: the
+    // secure world counts the secret to write one, which is a tenth of the
+    // wait (2026-11-25).
+    let note_wanted = user == OWNER && rest.iter().any(|c| c.made_up);
     // Opening a user's own files is the slow half: the credential goes to the
     // secure world, which counts it and hands back the secret behind it.
-    let note = timed(&format!("opening user {user}'s files with what was typed"), || open_user_files(service, user, Some(credential), None))?;
+    let note = timed(&format!("opening user {user}'s files with what was typed"), || {
+        open_user_files(service, user, Some(credential), None, note_wanted)
+    })?;
     at(900);
-    let rest = closed.iter().filter(|c| c.user != user).cloned().collect();
     let done = match user == OWNER {
         true => open_made_up(service, rest, &note),
         false => rest,
@@ -351,7 +368,7 @@ fn open_made_up(service: &KeyMint, closed: Vec<Closed>, owner: &Note) -> Vec<Clo
         .into_iter()
         .filter_map(|c| match c.made_up {
             false => Some(c),
-            true => match open_user_files(service, c.user, None, Some(token)) {
+            true => match open_user_files(service, c.user, None, Some(token), false) {
                 Ok(_) => None,
                 Err(e) => Some(Closed { why: Some(format!("{e:#}")), ..c }),
             },
@@ -599,8 +616,10 @@ const TAG_BYTES: usize = 16;
 /// user would type at their screen lock; a user who has set none needs
 /// none, and a user the phone made one up for needs `owner`, the note the
 /// owner's own secret gave. The owner's files open, their shared storage
-/// shows at /sdcard.
-fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owner: Option<&Token>) -> Result<Note> {
+/// shows at /sdcard. Where `note_wanted` is false no note is asked for and
+/// none is given: nothing is opened behind this user's secret, and the
+/// secure world counts the secret to write one.
+fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owner: Option<&Token>, note_wanted: bool) -> Result<Note> {
     let protector = timed(&format!("reading user {user}'s screen lock"), || protector(user))?;
     let stretched = match &protector.lock {
         Some(lock) => {
@@ -671,7 +690,10 @@ fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owne
     if user == OWNER {
         show_owner_storage()?;
     }
-    timed(&format!("the note user {user}'s own secret gives"), || secret_note(user, &synthetic_password))
+    match note_wanted {
+        true => timed(&format!("the note user {user}'s own secret gives"), || secret_note(user, &synthetic_password)),
+        false => Ok(Note::default()),
+    }
 }
 
 /// What the secure world wrote for a user's own secret, which is what the

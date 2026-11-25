@@ -19,6 +19,14 @@ sources = ["vendor_boot", "vendor_dlkm", "vendor", "system_dlkm"]
 # modules.load lists both drivers, and only the one whose controller is
 # fitted finds it.
 load = ["synaptics_tcm2", "goodix_core", "nxp-nci"]
+# 这两个不在页面前面加载：Goodix 的 probe 在没有它那颗控制器的机器上要重试到
+# 一秒上下才放弃，NXP 的 NFC 驱动起来还要读一遍芯片。恢复模式没有它们的页面，
+# 而触摸驱动（synaptics_tcm2）的 probe 各是各的：它留在前面等，面板才一定先于
+# 页面可用（2026-11-25，模块这一段 1.02 s → 0.63 s）。
+#
+# 整份都挪到旁线试过（synaptics 也挪）：模块和密钥程序抢起来，qseecomd 自己那
+# 0.3 s 被拖长，页面反而晚了 0.26 s（5.48 → 5.73）。触摸那一下只能等着。
+beside = ["goodix_core", "nxp-nci"]
 
 # As on the 17 Ultra, the controller comes back from its reset sending raw
 # frames for /odm/lib64/libtouchreport.so, which a recovery runs none of;

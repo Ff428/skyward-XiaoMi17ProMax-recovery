@@ -342,11 +342,18 @@ pub struct Modules {
     /// source's modules.dep and load first.
     #[serde(default)]
     pub load: Vec<String>,
+    /// Modules of [`Self::load`] the page does not wait for: they are loaded
+    /// beside the ones it does, on a thread of their own. A module whose
+    /// driver spends a second probing hardware the recovery has no page for
+    /// holds the pages back for that second, and it has nothing to say to
+    /// them (2026-11-25, `nxp-nci` and `goodix_core` on popsicle).
+    #[serde(default)]
+    pub beside: Vec<String>,
 }
 
 impl Default for Modules {
     fn default() -> Self {
-        Self { sources: default_module_sources(), load: Vec::new() }
+        Self { sources: default_module_sources(), load: Vec::new(), beside: Vec::new() }
     }
 }
 

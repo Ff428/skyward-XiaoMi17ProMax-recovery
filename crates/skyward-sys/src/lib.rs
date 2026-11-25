@@ -283,6 +283,31 @@ fn on_a_mount(path: &str) -> bool {
         .any(|point| path.starts_with(point) && point.len() > 1)
 }
 
+/// The file among [`KEPT_FILES`] that took the lines, once one has: looked for
+/// once, then written through as it is. The search reads `/proc/mounts` and
+/// opens the file, and doing that on every line was most of what a line cost
+/// — the two hundred lines of the modules' loading alone held the start back
+/// a second (2026-11-25). `None` while no partition is mounted yet, which is
+/// the first hundredth of a second, and the search is made again on the next
+/// line.
+static BESIDE: Mutex<Option<File>> = Mutex::new(None);
+
+/// Open the first of [`KEPT_FILES`] that a mounted partition carries.
+fn open_besides() -> Option<File> {
+    for path in KEPT_FILES {
+        if !on_a_mount(path) {
+            continue;
+        }
+        if let Some(dir) = std::path::Path::new(path).parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(f) = OpenOptions::new().create(true).append(true).open(path) {
+            return Some(f);
+        }
+    }
+    None
+}
+
 /// Append `text` to the first of [`KEPT_FILES`] that can be written, if any,
 /// with every line held so far before it.
 fn keep_besides(text: &str) {
@@ -291,19 +316,13 @@ fn keep_besides(text: &str) {
     if pending.len() > 4000 {
         pending.drain(..1000);
     }
-    for path in KEPT_FILES {
-        if !on_a_mount(path) {
-            continue;
-        }
-        if let Some(dir) = std::path::Path::new(path).parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-            for line in pending.drain(..) {
-                let _ = writeln!(f, "{line}");
-            }
-            return;
-        }
+    let mut beside = BESIDE.lock().unwrap_or_else(|e| e.into_inner());
+    if beside.is_none() {
+        *beside = open_besides();
+    }
+    let Some(f) = beside.as_mut() else { return };
+    for line in pending.drain(..) {
+        let _ = writeln!(f, "{line}");
     }
 }
 

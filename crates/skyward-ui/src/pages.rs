@@ -39,6 +39,10 @@ const PURPLE: Rgba = Rgba::rgb(0x77, 0x67, 0xf9);
 const SLATE: Rgba = Rgba::rgb(0x8c, 0x9d, 0xb0);
 const ORANGE: Rgba = Rgba::rgb(0xff, 0x69, 0x00);
 const RED: Rgba = Rgba::rgb(0xfa, 0x38, 0x2e);
+/// 解密页进度条前端那个点：白，落在蓝条上最清楚。
+const WHITE: Rgba = Rgba::rgb(0xff, 0xff, 0xff);
+/// 解密页进度条占整行内容宽的比例：这段等待短，条不铺满（2026-11-25）。
+const BAR_SHARE: f32 = 0.62;
 
 /// What every page draws from: style, typefaces, the device readings, and
 /// what the pages hold, from the choices made on them to where the data
@@ -985,19 +989,22 @@ fn data_status(cx: &Ctx, mut c: Canvas, icon: Icon, title: &str, note: Option<&s
     // partition is open, so that the stages of the boot behind it and of the
     // opening itself do not stop it part way (2026-11-19).
     if busy {
-        // 与安装、备份那些卡里的条一个尺寸：内容宽、6 dp 高，不再单独一条窄的
-        // 居中（2026-11-23 用户要求一致）。
-        let (x0, h) = (m.margin + m.inner, m.dp(6.0));
-        let w = m.w as f32 - m.margin - m.inner - x0;
+        // 与安装、备份那些卡里的条一个高度；长度按整行收窄到六成并居中：
+        // 这段等待通常只有半秒上下，铺满整行会显得走过的路比实际长
+        // （2026-11-25 用户要求缩短）。
+        let (left, h) = (m.margin + m.inner, m.dp(6.0));
+        let room = m.w as f32 - m.margin - m.inner - left;
+        let w = room * BAR_SHARE;
+        let x0 = left + (room - w) / 2.0;
         let bar = sign_cy + m.dp(152.0);
         let done = cx.state.data_progress.clamp(0.0, 1.0);
         c.fill_round_rect(x0, bar, w, h, h / 2.0, t.pal.card);
         if done > 0.001 {
             let filled = (w * done).max(h);
             c.fill_round_rect(x0, bar, filled, h, h / 2.0, t.pal.accent);
-            // 条的前端一个圆点，走到哪儿一眼看得见。
+            // 条的前端一个白点，走到哪儿一眼看得见（2026-11-25 用户要求白点）。
             let dot = x0 + filled.clamp(h / 2.0, w - h / 2.0);
-            c.fill_circle(dot, bar + h / 2.0, h / 2.0 + m.dp(2.0), t.pal.accent);
+            c.fill_circle(dot, bar + h / 2.0, h / 2.0 + m.dp(2.0), WHITE);
         }
         let percent = format!("{}%", (done * 100.0).round() as u32);
         c.text_center(&f.body, &percent, x, bar + m.dp(26.0), m.sub_px, t.pal.subtitle);

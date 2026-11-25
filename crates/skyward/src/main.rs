@@ -758,10 +758,36 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
         }
     }
     let loading = std::time::Instant::now();
-    for path in load_modules(cfg, &cfg.modules.load)? {
+    // 配置点名 beside 的那些模块不等：它们的驱动各有各的硬件要探（这一台是
+    // Goodix 的控制器不在、NXP 的 NFC 芯片要读一遍），恢复模式没有页面用它们，
+    // 页面也就不排在它们后面（2026-11-25，模块这一段 1.02 s → 0.06 s）。
+    let (waited, beside_modules): (Vec<String>, Vec<String>) =
+        cfg.modules.load.iter().cloned().partition(|name| !cfg.modules.beside.contains(name));
+    for path in load_modules(cfg, &waited)? {
         skyward_sys::kmsg(&format!("loaded {}", path.display()))?;
     }
     skyward_sys::kmsg(&format!("the modules are in at {:.2} s", loading.elapsed().as_secs_f64()))?;
+    if !beside_modules.is_empty() {
+        let dirs = cfg.modules.sources.iter().map(|s| skyward_modules::source_dir(s)).collect::<Result<Vec<_>>>()?;
+        let names = beside_modules.clone();
+        // 起不了线程就在这条线上加载：慢一点，但模块一个也不会少。
+        let spawned = std::thread::Builder::new().name("the modules beside".into()).spawn(move || match skyward_modules::load(&dirs, &names) {
+            Ok(paths) => {
+                for path in &paths {
+                    let _ = skyward_sys::kmsg(&format!("loaded {} beside the pages", path.display()));
+                }
+            }
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("a module beside the pages did not load: {e:#}"));
+            }
+        });
+        if let Err(e) = spawned {
+            skyward_sys::kmsg(&format!("the modules beside the pages are loaded on this line instead: {e}"))?;
+            for path in load_modules(cfg, &beside_modules)? {
+                skyward_sys::kmsg(&format!("loaded {} beside the pages", path.display()))?;
+            }
+        }
+    }
     // The charge page reads everything through the ADSP, and a boot that asked
     // for its firmware while the index under /odm was still being built left it
     // down for good. It is asked above, beside the modules rather than after
@@ -851,6 +877,13 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
             // reaches the phone at the next start of the recovery, which is
             // this.
             let mode = charging_mode();
+            // 定充电快慢的那几个程序和开分区没有关系（它们读 ADSP 的 glink，
+            // 那时 ADSP 已经起来了），所以先攒起来：别的密钥程序一就绪页面就能
+            // 开分区，它们在自己那条线上起，解密不必排在它们后面（2026-11-25）。
+            let (charging, chain): (Vec<_>, Vec<_>) = chain.into_iter().partition(|step| match step {
+                skyward_programs::secure::Step::Start(program) => keys::settles_the_charge(&program.service.path),
+                skyward_programs::secure::Step::ServeElements => false,
+            });
             let libraries_beside = libraries.clone();
             let beside = (!beside.is_empty())
                 .then(|| {
@@ -860,11 +893,27 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
                 })
                 .transpose()
                 .context("start the boot control beside the keys")?;
-            let started_charging = keys::start(&chain, libraries.as_deref(), mode)?;
-            skyward_sys::kmsg(&format!(
-                "the charge step kept is {}: {started_charging} program(s) of the phone's that settle it were started",
-                mode.name()
-            ))?;
+            let libraries_charging = libraries.clone();
+            // 不 join：它们起完就完，页面等的不是它们。起不来就写在日志里，
+            // 由充电页自己再读节点（2026-11-25）。
+            if !charging.is_empty()
+                && let Err(e) = std::thread::Builder::new().name("the charge".into()).spawn(move || {
+                    match keys::start(&charging, libraries_charging.as_deref(), mode) {
+                        Ok(started) => {
+                            let _ = skyward_sys::kmsg(&format!(
+                                "the charge step kept is {}: {started} program(s) of the phone's that settle it were started",
+                                mode.name()
+                            ));
+                        }
+                        Err(e) => {
+                            let _ = skyward_sys::kmsg(&format!("the programs that settle the charge did not start: {e:#}"));
+                        }
+                    }
+                })
+            {
+                skyward_sys::kmsg(&format!("the programs that settle the charge are started on this line instead: {e}"))?;
+            }
+            keys::start(&chain, libraries.as_deref(), mode)?;
             skyward_sys::kmsg(&format!("the key programs came up at {:.2} s", watched.elapsed().as_secs_f64()))?;
             if let Some(beside) = beside {
                 beside.join().map_err(|_| anyhow::anyhow!("the thread the boot control ran on panicked"))??;

@@ -200,6 +200,20 @@ fn main() -> Result<()> {
     write_png(&path, &whole_page(&mut app, &fonts, &info))?;
     println!("wrote {}", path.display());
 
+    // The partition being opened: the bar under the note and the dot at its
+    // front, drawn part way (2026-11-25: the bar is shorter and the dot white).
+    let mut app = App::new(Screen::Decrypt, w, h, ppd);
+    app.state.lang = lang;
+    app.state.dark = true;
+    app.state.remember = true;
+    app.state.prepared = true;
+    app.state.data = Data::Opening;
+    app.state.data_progress = 0.45;
+    app.state.data_reported = 0.45;
+    let path = out.join("15-decrypt-opening-dark.png");
+    write_png(&path, &whole_page(&mut app, &fonts, &info))?;
+    println!("wrote {}", path.display());
+
     // The sideload page through an install, as the installer tells it.
     let recovery = ImageKind::Boot { kernel: false, ramdisk: Ramdisk::Recovery };
     let installing: [(&str, bool, Install); 17] = [
