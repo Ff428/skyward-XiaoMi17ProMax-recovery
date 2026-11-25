@@ -72,15 +72,19 @@ fastboot reboot recovery
 
 ## 校验
 
-```
-镜像    skyward-OS4.0.8.0-XiaoMi17ProMax.img            104857600 字节
-sha256  70d78c6bd32e62f99abab04b5a1bde02c909b2275cac796965378f4c028c8e19
-md5     9dbaadd8178872da42d68bb8b3b279fa
+Release 里的两个 `.img` 都是 104857600 字节（100 MiB），`SHA256SUMS` 里是：
 
-镜像    skyward-OS4.0.8.0-XiaoMi17ProMax-official.img   104857600 字节
-sha256  0641230eac812fde89399bab4832778ab0630203992bf9ae2e36f689bf9e7e21
-md5     e813570637fee7b730c329878ba5fb7b
 ```
+28ab463f75053981a709886ddb889c963646a0afe915e1e8dda039bd5536ea0d  skyward-OS4.0.8.0-XiaoMi17ProMax.img
+6950a2dfeaeee4284942847b9f080654219e57ae7694c054dff4eba58966a99d  skyward-OS4.0.8.0-XiaoMi17ProMax-official.img
+```
+
+```sh
+sha256sum -c SHA256SUMS
+```
+
+自己出包时以 `out/SHA256SUMS` 为准：同一棵树、同一台机器重出逐字节相同，
+换机器（本机 / CI）会有差异，功能一样。
 
 要 zip（给只吃 zip 的刷机工具）自己压一份，内容就是上面的 img：
 
