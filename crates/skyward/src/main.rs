@@ -648,6 +648,18 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
         skyward_sys::kmsg(&format!("{name} is mounted on {}", at.display()))?;
     }
     skyward_ui::progress::reached(skyward_ui::progress::PARTITIONS);
+    // 充电那一页读的一切都从 ADSP 的 glink 上来，它早一点起来，插上充电器这件事
+    // 就早一点认得出来。叫它起来要等两段时间：先给正在读的固件 0.7 s，再把没
+    // 起来的那个叫起来，而叫它那一下要等固件从 /firmware 读完（这台机上是
+    // 1.36 s）。这两段和解密没有一点关系 —— 分区挂好了、ueventd 的索引也建好
+    // 了，正是该问它的时候，只是问在另一条线上：以前它挡在模块加载之后，解密
+    // 得排在它后面（2026-11-25）。
+    let raising = std::thread::Builder::new().name("adsp".into()).spawn(charge::raise_the_adsp);
+    if let Err(e) = raising {
+        // 线程起不了就照旧在这条线上问：慢一点，但不会少问。
+        skyward_sys::kmsg(&format!("the ADSP is asked on the pages' own line: {e}"))?;
+        charge::raise_the_adsp();
+    }
     // What the phone describes is known wherever its partitions could be
     // read at all; what they say of its keys may still not be.
     let (described, found) = match found {
@@ -752,9 +764,9 @@ fn bring_up(cfg: &DeviceConfig, slot: skyward_vab::Slot, found: Result<keys::Fou
     skyward_sys::kmsg(&format!("the modules are in at {:.2} s", loading.elapsed().as_secs_f64()))?;
     // The charge page reads everything through the ADSP, and a boot that asked
     // for its firmware while the index under /odm was still being built left it
-    // down for good. The partitions are mounted and the modules are in by now,
-    // so this is the first moment asking again can work.
-    charge::raise_the_adsp();
+    // down for good. It is asked above, beside the modules rather than after
+    // them, so that its wait does not hold the opening of the data partition
+    // back (2026-11-25).
     skyward_ui::progress::reached(skyward_ui::progress::DRIVERS);
     // The WLAN's driver is started here, without waiting for its interface, so
     // that the supplicant finds a driver ready when the page asks for the WLAN

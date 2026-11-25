@@ -63,6 +63,17 @@ pub fn rewind() {
     PROGRESS.store(0, Ordering::Relaxed);
 }
 
+/// How long a step of the work took, in the kernel log. The page says only
+/// that it is at the partition, so a start that feels slow and a phone that
+/// is not working are told apart by where the seconds are; the next change
+/// then knows which step to take on (2026-11-25).
+fn timed<T>(what: &str, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    let at = std::time::Instant::now();
+    let done = work();
+    let _ = skyward_sys::kmsg(&format!("opening the data partition: {what} took {:.3} s", at.elapsed().as_secs_f64()));
+    done
+}
+
 /// The phone's own table on the data partition.
 fn table() -> Result<Vec<Entry>> {
     let entries = skyward_block::fstab::read(MOUNT)?;
@@ -117,12 +128,12 @@ pub struct Opened {
 /// mount leaves no device behind.
 fn open(service: &KeyMint) -> Result<Opened> {
     at(80);
-    let (entries, mapped) = map(service)?;
+    let (entries, mapped) = timed("the key and the device", || map(service))?;
     at(220);
     let mounted = (|| -> Result<(Option<Checked>, String)> {
         // A phone that names the partition once per filesystem it might
         // hold mounts it with the entry of the one it holds.
-        let holds = skyward_block::probe::filesystem(&mapped)?;
+        let holds = timed("reading the filesystem's name", || skyward_block::probe::filesystem(&mapped))?;
         at(250);
         let entry = entries.iter().find(|e| holds.as_ref() == Some(&e.filesystem)).unwrap_or(&entries[0]);
         std::fs::create_dir_all(MOUNT).with_context(|| format!("make {MOUNT}"))?;
@@ -133,7 +144,7 @@ fn open(service: &KeyMint) -> Result<Opened> {
         // seconds the page spends showing nothing; a filesystem the kernel
         // takes as it lies needs none of it, and the one it turns away is
         // worth the walk and is mounted again after it.
-        let checked = match mount::mount(&mapped, Path::new(MOUNT), &entry.filesystem, &entry.options) {
+        let checked = match timed("mounting it", || mount::mount(&mapped, Path::new(MOUNT), &entry.filesystem, &entry.options)) {
             Ok(()) => None,
             Err(refused) => match entry.extras.iter().any(|e| e == "check") {
                 true => {
@@ -180,9 +191,9 @@ fn map(service: &KeyMint) -> Result<(Vec<Entry>, PathBuf)> {
     let Some(encryption) = encryption else {
         return Ok((entries, PathBuf::from(device)));
     };
-    let key = storage_key(service, entry, &encryption)?;
+    let key = timed("unwrapping the partition's key", || storage_key(service, entry, &encryption))?;
     let sectors = skyward_block::size_bytes(&device)? / 512;
-    let mapped = dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false)?;
+    let mapped = timed("the device that reads it decrypted", || dm::create(MAPPED, &[target(&device, sectors, &key, &encryption)], false))?;
     Ok((entries, mapped))
 }
 
@@ -270,9 +281,9 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
         return Ok(Opening { mounted, closed: Vec::new() });
     }
     at(400);
-    open_shared(service)?;
+    timed("the key for the files that belong to no user", || open_shared(service))?;
     at(470);
-    let users = open_users(service)?;
+    let users = timed("the key for each user's files", || open_users(service))?;
     at(520);
     // Each user's own files are opened in turn, the bar moving with them:
     // the owner's files are most of what the page opens.
@@ -286,10 +297,10 @@ pub fn open_without_credential(service: &KeyMint) -> Result<Opening> {
             at(520 + (i as u16 + 1) * 160 / total);
             continue;
         }
-        let protector = protector(user)?;
+        let protector = timed(&format!("reading user {user}'s screen lock"), || protector(user))?;
         match protector.lock {
             None => {
-                let note = open_user_files(service, user, None, None)?;
+                let note = timed(&format!("opening user {user}'s own files"), || open_user_files(service, user, None, None))?;
                 if user == OWNER {
                     owner = note;
                 }
@@ -311,7 +322,7 @@ pub fn unlock(service: &KeyMint, closed: &[Closed], user: u32, credential: &[u8]
     at(700);
     // Opening a user's own files is the slow half: the credential goes to the
     // secure world, which counts it and hands back the secret behind it.
-    let note = open_user_files(service, user, Some(credential), None)?;
+    let note = timed(&format!("opening user {user}'s files with what was typed"), || open_user_files(service, user, Some(credential), None))?;
     at(900);
     let rest = closed.iter().filter(|c| c.user != user).cloned().collect();
     let done = match user == OWNER {
@@ -590,70 +601,77 @@ const TAG_BYTES: usize = 16;
 /// owner's own secret gave. The owner's files open, their shared storage
 /// shows at /sdcard.
 fn open_user_files(service: &KeyMint, user: u32, credential: Option<&[u8]>, owner: Option<&Token>) -> Result<Note> {
-    let protector = protector(user)?;
+    let protector = timed(&format!("reading user {user}'s screen lock"), || protector(user))?;
     let stretched = match &protector.lock {
         Some(lock) => {
-            let typed = match made_up_credential(service, user, &protector.id, owner)? {
+            let typed = timed(&format!("reading the credential the phone made up for user {user}"), || made_up_credential(service, user, &protector.id, owner))?;
+            let typed = match typed {
                 Some(made_up) => made_up,
                 None => credential
                     .with_context(|| format!("user {user} has set a screen lock, and their files do not open without it"))?
                     .to_vec(),
             };
-            lock.stretched(&typed).context("stretch the credential")?
+            timed("stretching the credential", || lock.stretched(&typed)).context("stretch the credential")?
         }
         None => crate::user::stretched_without_credential(),
     };
-    let (secret, note) = match (&protector.bound, &protector.lock) {
-        // The weaver checks the credential itself, and gives back the value
-        // the secret is bound to only for the right one. The key holding
-        // the secret is then guarded by nothing else.
-        (Bound::Weaver(slot), _) => {
-            let binder = Binder::open()?;
-            let weaver = Weaver::open(&binder)?;
-            let key = crate::user::weaver_key(&stretched, weaver.config()?.key_bytes)?;
-            let value = weaver.read(*slot, &key)?;
-            (crate::user::weaver_protector_secret(&stretched, &value), None)
+    let (secret, note) = timed("having the secure world take the credential", || {
+        Ok(match (&protector.bound, &protector.lock) {
+            // The weaver checks the credential itself, and gives back the value
+            // the secret is bound to only for the right one. The key holding
+            // the secret is then guarded by nothing else.
+            (Bound::Weaver(slot), _) => {
+                let binder = Binder::open()?;
+                let weaver = Weaver::open(&binder)?;
+                let key = crate::user::weaver_key(&stretched, weaver.config()?.key_bytes)?;
+                let value = weaver.read(*slot, &key)?;
+                (crate::user::weaver_protector_secret(&stretched, &value), None)
+            }
+            // The key holding this user's secret is guarded by the screen lock,
+            // so the secure world has to be shown the credential itself before
+            // it will use that key.
+            (Bound::Secdiscardable(secdiscardable), Some(lock)) => {
+                let (binder, hardware) = (Binder::open()?, Binder::hardware()?);
+                let note = Gatekeeper::open(&binder, &hardware)?.verify(
+                    TYPED_SLOT + user,
+                    &lock.enrolled,
+                    &crate::user::gatekeeper_password(&stretched),
+                )?;
+                (crate::user::protector_secret(&stretched, secdiscardable), Some(note))
+            }
+            (Bound::Secdiscardable(secdiscardable), None) => (crate::user::protector_secret(&stretched, secdiscardable), None),
+        })
+    })?;
+    let synthetic_password = timed("opening what the phone holds the user's secret closed with", || {
+        let held = crate::keystore2::key_blob(Path::new(crate::keystore2::DATABASE), &protector.key_alias())?;
+        let content = crate::user::content(&protector.blob)?;
+        if content.len() < NONCE_BYTES + TAG_BYTES {
+            anyhow::bail!("the user's blob is too short to hold anything");
         }
-        // The key holding this user's secret is guarded by the screen lock,
-        // so the secure world has to be shown the credential itself before
-        // it will use that key.
-        (Bound::Secdiscardable(secdiscardable), Some(lock)) => {
-            let (binder, hardware) = (Binder::open()?, Binder::hardware()?);
-            let note = Gatekeeper::open(&binder, &hardware)?.verify(
-                TYPED_SLOT + user,
-                &lock.enrolled,
-                &crate::user::gatekeeper_password(&stretched),
-            )?;
-            (crate::user::protector_secret(&stretched, secdiscardable), Some(note))
-        }
-        (Bound::Secdiscardable(secdiscardable), None) => (crate::user::protector_secret(&stretched, secdiscardable), None),
-    };
-    let held = crate::keystore2::key_blob(Path::new(crate::keystore2::DATABASE), &protector.key_alias())?;
-    let content = crate::user::content(&protector.blob)?;
-    if content.len() < NONCE_BYTES + TAG_BYTES {
-        anyhow::bail!("the user's blob is too short to hold anything");
-    }
-    let (nonce, body) = content.split_at(NONCE_BYTES);
-    let inner = service
-        .gcm_decrypt(&held, &[], nonce, body, note.as_ref())
-        .context("open what the secure world holds the user's blob closed with")?;
-    let synthetic_password = crate::user::open_inner(&secret, &inner)?;
+        let (nonce, body) = content.split_at(NONCE_BYTES);
+        let inner = service
+            .gcm_decrypt(&held, &[], nonce, body, note.as_ref())
+            .context("open what the secure world holds the user's blob closed with")?;
+        crate::user::open_inner(&secret, &inner)
+    })?;
     let file_secret = crate::user::file_secret(&synthetic_password);
 
-    let mode = std::fs::read_to_string(FILE_MODE).with_context(|| format!("read {FILE_MODE}"))?;
-    let wrapped = crate::fscrypt::hardware_wrapped(mode.trim());
-    let dir = Path::new(USER_KEYS).join("ce").join(user.to_string()).join("current");
-    let stored = StoredKey::load(&dir).with_context(|| format!("read the key in {}", dir.display()))?;
-    let raw = stored.unwrap(Unwrap::<KeyMint>::Secret(&file_secret)).with_context(|| format!("unwrap the key in {}", dir.display()))?;
-    let raw = match wrapped {
-        true => service.ephemeral_storage_key(&raw).with_context(|| format!("make the key in {} usable now", dir.display()))?,
-        false => raw,
-    };
-    crate::fscrypt::add_key(Path::new(MOUNT), &raw, wrapped)?;
+    timed("letting the user's key in", || {
+        let mode = std::fs::read_to_string(FILE_MODE).with_context(|| format!("read {FILE_MODE}"))?;
+        let wrapped = crate::fscrypt::hardware_wrapped(mode.trim());
+        let dir = Path::new(USER_KEYS).join("ce").join(user.to_string()).join("current");
+        let stored = StoredKey::load(&dir).with_context(|| format!("read the key in {}", dir.display()))?;
+        let raw = stored.unwrap(Unwrap::<KeyMint>::Secret(&file_secret)).with_context(|| format!("unwrap the key in {}", dir.display()))?;
+        let raw = match wrapped {
+            true => service.ephemeral_storage_key(&raw).with_context(|| format!("make the key in {} usable now", dir.display()))?,
+            false => raw,
+        };
+        crate::fscrypt::add_key(Path::new(MOUNT), &raw, wrapped)
+    })?;
     if user == OWNER {
         show_owner_storage()?;
     }
-    secret_note(user, &synthetic_password)
+    timed(&format!("the note user {user}'s own secret gives"), || secret_note(user, &synthetic_password))
 }
 
 /// What the secure world wrote for a user's own secret, which is what the

@@ -19,3 +19,6 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 libc = { workspace = true }
+# 开分区每一步花了多久要落进内核日志：页面上「慢」和手机没在干活，只有那份
+# 时间表分得开（2026-11-25）。
+skyward-sys = { path = "../skyward-sys" }

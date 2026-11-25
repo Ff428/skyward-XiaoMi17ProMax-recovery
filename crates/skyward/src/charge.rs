@@ -164,6 +164,10 @@ const ADSP_GRACE: Duration = Duration::from_millis(700);
 /// this is called from. A load that is still running reads `offline` just as a
 /// failed one does, so it is given `ADSP_GRACE` first and left alone if it
 /// comes up by itself; only one still down after that is asked.
+///
+/// 这一段等待（0.7 s 加读写固件的 0.6 s）和解密没有任何关系，所以它在自己
+/// 的线上跑，和加载模块一起进行：调用它的地方是 bring_up，它在挂好分区之后
+/// 就把它起在另一条线上，让页面不必排在它后面（2026-11-25）。
 pub fn raise_the_adsp() {
     let raised = skyward_sys::remoteproc::ask("adsp", ADSP_GRACE);
     // What it came to is worth having in the log either way: a boot that still
