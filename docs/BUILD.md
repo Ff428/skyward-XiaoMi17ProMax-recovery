@@ -283,4 +283,7 @@ python scripts/bump_stock.py --version OS4.0.7.0.XPBCNXM
 ## 版本号
 
 `crates/skyward-info/build.rs` 把 git 描述写进二进制，关于页的版本行来自这里；
-workspace 版本在 `Cargo.toml` 的 `[workspace.package] version`（当前 `0.5.5`）。
+workspace 版本在 `Cargo.toml` 的 `[workspace.package] version`（当前 `0.6.0`，2026-11-25
+起；`0.5.5` 是并入布丁功能时的基线）。改它要跟着跑一次
+`cargo update --offline --workspace`，`Cargo.lock` 里 25 个成员包的版本才会一起上去，
+否则 CI 的 `--locked` 会直接红。对外发布另有一个 tag（`v0.6.0`），两处一起改。

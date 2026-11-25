@@ -327,6 +327,19 @@ fn long_page(cx: &Ctx) -> Canvas {
     sheet(cx, cx.t.m.h * 3, cx.t.pal.bg)
 }
 
+/// 一页画布，高到装得下 `rows` 行内容：默认三屏，行多了按行高估一个上界（标题、
+/// 节标题、脚注与卡片间隔算作六行）。上限六屏 —— 画布是整屏的像素，再长就不值
+/// 得了。`fit` 之后仍按真画到的位置裁短，所以估多了并不浪费。
+///
+/// 2026-11-25 用户报的「下拉到最后」：无线网络页把整个扫描结果一次画进画布，
+/// 三屏装不下时列表尾、卡片底圆角与「添加网络」就永远滚不到。
+fn long_page_rows(cx: &Ctx, rows: usize) -> Canvas {
+    let m = &cx.t.m;
+    let wanted = m.content_top + (rows as f32 + 6.0) * m.row_h + m.margin * 2.0;
+    let (least, most) = ((m.h * 3) as f32, (m.h * 6) as f32);
+    sheet(cx, wanted.max(least).min(most) as u32, cx.t.pal.bg)
+}
+
 /// How tall a long page whose content ends at `bottom` is: to the bottom
 /// margin after it, and never shorter than one screen.
 fn fitted(t: &Theme, bottom: f32) -> u32 {
@@ -5000,7 +5013,14 @@ fn skyward_online(c: &mut Canvas, cx: &Ctx, y: f32, out: &mut Vec<Hit>) -> f32 {
 pub fn wlan(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     let w = s.wlan.as_ref().expect("the WLAN page shows on a phone whose WLAN is brought up");
-    let mut c = long_page(cx);
+    // How many rows the page lays, counted before the canvas is asked for: the
+    // phone's scan can list dozens of networks, and a page given three screens
+    // whatever it holds leaves the last of them and the row that adds one by
+    // hand past the end of the canvas, where no scrolling reaches them
+    // (2026-11-25, what the user saw pulling the list to its end).
+    let nearby_rows = w.networks.iter().filter(|n| w.joined.as_ref().is_none_or(|j| j.ssid != n.ssid)).count();
+    let laid = 3 + usize::from(w.joined.is_some()) + s.wlan_saved.len() + nearby_rows + 1;
+    let mut c = long_page_rows(cx, laid);
     let mut out = Vec::new();
     let top = t.m.content_top;
     let on = !matches!(w.power, Power::Off | Power::Failed(_));
