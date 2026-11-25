@@ -240,6 +240,10 @@ pub enum Outcome {
     Ran { wipe_cache: bool },
     /// The system of this name is installed beside the installed one.
     SystemInstalled { name: String },
+    /// A Magisk / KernelSU module of this id was unpacked into
+    /// `/data/adb/modules`, for the root solution to load at the next start.
+    /// Its own update-binary is Magisk's to run, not this recovery's.
+    ModuleInstalled { id: String },
     /// Stopped before anything was written.
     Cancelled,
     /// Not installed, for this reason; nothing was written.

@@ -3822,6 +3822,23 @@ impl Pages<'_> {
             *served = count;
             self.app.refresh();
         }
+        // 服务开着、地址还空着，WLAN 一接上就把地址补上：用户不必先关再开
+        // 才看得到该在浏览器里敲什么（2026-11-25）。
+        let awaiting_address = matches!(&self.app.state.serving, skyward_ui::app::Serving::Running { at: None, .. });
+        if awaiting_address {
+            let linked = self.app.state.wlan.as_ref().and_then(|w| w.joined.as_ref()).and_then(|j| match &j.stage {
+                Joining::Connected(link) => Some(link.address.to_string()),
+                _ => None,
+            });
+            if let Some(ip) = linked {
+                let at = format!("http://{ip}:{}/", crate::fileserve::PORT);
+                skyward_sys::kmsg(&format!("the folder served has an address now: {at}"))?;
+                if let skyward_ui::app::Serving::Running { at: slot, .. } = &mut self.app.state.serving {
+                    *slot = Some(at);
+                }
+                self.app.refresh();
+            }
+        }
         let wlan_on = self.app.state.wlan.as_ref().is_some_and(|w| w.power == WlanPower::On);
         if self.app.screen() == Screen::Wlan && wlan_on && self.scanned_at.elapsed() >= SCAN_EVERY {
             self.scanned_at = Instant::now();
@@ -4233,7 +4250,7 @@ impl Pages<'_> {
             .into_iter()
             .chain(drive_told.map(Incoming::Drive))
             .chain(requests.into_iter().map(Incoming::Asked))
-            .chain(self.inputs.read()?.into_iter().map(Incoming::Input));
+            .chain(self.inputs.read().into_iter().map(Incoming::Input));
         for came in incoming {
             let effects = match came {
                 Incoming::Arrived => self.app.arrive(),
@@ -4466,6 +4483,27 @@ impl Pages<'_> {
             }
             Effect::InstallPath(path) => {
                 if self.may_install(now)? {
+                    // Magisk / KernelSU 的模块 zip 不是刷机包：里面那段
+                    // `META-INF/com/google/android/update-binary` 是给 Magisk 自己
+                    // 跑的那一段，照刷机包跑只会「安装脚本运行失败，退出码为 1」
+                    // （2026-11-25，用户装 LSPosed v2.2.1-7949 报的就是这个）。
+                    // 有 module.prop 就按模块装进 /data/adb/modules，页面照安装
+                    // 结果报一次，不进刷机那套流程。
+                    if module_zipped(&path) {
+                        let outcome = match install_module(&path) {
+                            Ok(id) => {
+                                skyward_sys::kmsg(&format!("the module {id} is in from {path}"))?;
+                                skyward_install::Outcome::ModuleInstalled { id }
+                            }
+                            Err(e) => {
+                                skyward_sys::kmsg(&format!("{path} is not installed as a module: {e}"))?;
+                                skyward_install::Outcome::Failed(skyward_install::Failure::Error(e.into()))
+                            }
+                        };
+                        self.app.set_modules(read_modules());
+                        self.app.install(skyward_install::Event::Finished(outcome), now);
+                        return Ok(Vec::new());
+                    }
                     self.installer = Some(Installer::open(PathBuf::from(path), detach(), install_options(&self.app))?);
                 }
             }
@@ -4737,7 +4775,22 @@ impl Pages<'_> {
                     }
                 }
             }
-            Effect::Wlan(on) => wlan_worker(&self.wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off }),
+            Effect::Wlan(on) => {
+                // 开关是用户按的：关掉时把没走完的一轮收起来，打开时从名单第一张
+                // 重新试起。这两个状态以前一直躺着 —— 开机自动连上之后关一下再打开，
+                // `wlan_joined` 还是 true，自动那一支从此不再进，radio 起来了却谁也
+                // 不去连（2026-11-25，用户报「无线网络关闭后再打开不会自动连接」）。
+                // `wlan_opened` 不复位：它是开机只开一次那道闸，复位会让刚关掉的
+                // radio 被自动重开。
+                self.wlan_tried.clear();
+                self.wlan_trying = None;
+                self.wlan_try_at = None;
+                self.wlan_rounds = 0;
+                self.wlan_round_at = None;
+                self.wlan_kept = false;
+                self.wlan_joined = !on;
+                wlan_worker(&self.wlan)?.send(if on { wlan::Command::On } else { wlan::Command::Off })
+            }
             Effect::ScanWlan => {
                 self.scanned_at = Instant::now();
                 wlan_worker(&self.wlan)?.send(wlan::Command::Scan);
@@ -4805,13 +4858,20 @@ impl Pages<'_> {
                             Joining::Connected(link) => Some(link.address.to_string()),
                             _ => None,
                         });
-                    let at = match address {
-                        Some(ip) => format!("http://{ip}:{}/", crate::fileserve::PORT),
-                        None => format!("http://<phone>:{}/", crate::fileserve::PORT),
-                    };
+                    // 没有连上 WLAN 时这里没有地址可给：`http://<phone>:8080/`
+                    // 是个编出来的串，用户照着它敲只会得到「找不到主机」。
+                    // 端口照旧开着，连上之后地址自己补上（2026-11-25）。
+                    let at = address.map(|ip| format!("http://{ip}:{}/", crate::fileserve::PORT));
                     match crate::fileserve::Server::start(folder.clone()) {
                         Ok(server) => {
-                            skyward_sys::kmsg(&format!("serving {} at {at}", folder.display()))?;
+                            match &at {
+                                Some(at) => skyward_sys::kmsg(&format!("serving {} at {at}", folder.display()))?,
+                                None => skyward_sys::kmsg(&format!(
+                                    "serving {} on port {}; no network is joined, so there is no address yet",
+                                    folder.display(),
+                                    crate::fileserve::PORT
+                                ))?,
+                            }
                             self.serving = Some(server);
                             self.app.state.serving = skyward_ui::app::Serving::Running { at, served: 0 };
                         }
@@ -5533,19 +5593,139 @@ fn mark_module_remove(id: &str, on: bool) -> std::io::Result<()> {
     }
 }
 
-/// Install a module from the zip at `path`: its `module.prop` names it, and
-/// everything beside that file goes into `/data/adb/modules/<id>`, replacing a
-/// copy already there.
+/// 这个 zip 是不是 Magisk / KernelSU 的模块：里面有一份 `module.prop`
+/// （根上或者套一层文件夹）。模块的 update-binary 不是给 recovery 跑的，
+/// 认出它来是为了别把它当刷机包送进安装脚本那套流程。
+fn module_zipped(path: &str) -> bool {
+    let Ok(file) = std::fs::File::open(path) else { return false };
+    let Ok(mut zip) = zip::ZipArchive::new(file) else { return false };
+    (0..zip.len()).any(|i| zip.by_index(i).map(|e| e.name().ends_with("module.prop")).unwrap_or(false))
+}
+
+/// Magisk 模块脚本里的 `unzip`：包已经整份解到 `$SKYWARD_STAGE`，这里按那些
+/// 脚本的用法把要的条目搬过去。toybox 的 unzip 只认 stored 与 deflate，模块
+/// 里 XZ 压缩（method 95）的条目它一句 "compression method not supported: 95"
+/// 就完了（2026-11-25）。
+const STUB_UNZIP: &str = r##"#!/system/bin/sh
+stage="$SKYWARD_STAGE"
+[ -d "$stage" ] || { echo "unzip: nothing was staged" >&2; exit 1; }
+junk=false
+dest=""
+entry=""
+first=true
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -oj|-jo|-j) junk=true ;;
+    -d) shift; dest="$1" ;;
+    -p|-o|-q|-qq|-l|-v|-j*) ;;
+    -*) ;;
+    *)
+      if $first; then
+        first=false
+      elif [ -z "$entry" ]; then
+        entry="$1"
+      elif [ -z "$dest" ]; then
+        dest="$1"
+      fi
+      ;;
+  esac
+  shift
+done
+[ -n "$entry" ] || { echo "unzip: no entry named" >&2; exit 1; }
+[ -n "$dest" ] || dest="."
+found=false
+# 不带引号才是通配：安装脚本会写 "META-INF/com/google/android/*"。
+set -- $stage/$entry
+for f in "$@"; do
+  [ -f "$f" ] || continue
+  found=true
+  if $junk; then
+    out="$dest/${f##*/}"
+  else
+    rel=${f#"$stage"/}
+    out="$dest/$rel"
+  fi
+  if [ "$f" = "$out" ]; then
+    continue
+  fi
+  mkdir -p "${out%/*}" 2>/dev/null
+  cp -f "$f" "$out" || exit 1
+done
+$found || { echo "unzip: $entry is not in the package" >&2; exit 1; }
+exit 0
+"##;
+
+/// 模块脚本偶尔问一句 `magisk --path`，给它一个不指向任何东西的答案。
+const STUB_MAGISK: &str = r##"#!/system/bin/sh
+case "$1" in
+  --path) echo /sbin ;;
+  --version) echo 29.0 ;;
+  --versionCode) echo 29000 ;;
+esac
+exit 0
+"##;
+
+/// 跑模块自己的 `customize.sh` 之前摆好的那套变量与函数，Magisk 安装模块时
+/// 由它自己给。`BOOTMODE=true` 是因为 LSPosed 这类模块会拒绝在 recovery 里装
+/// （它以为 recovery 的实现都是坏的），而这里的安装器正是要跑它那段脚本。
+const ENV_SH: &str = r##"export BOOTMODE=true
+export MAGISK=true
+export KSU=false
+export APATCH=false
+export ARCH=@ARCH@
+export ABI=@ABI@
+export API=@API@
+export MAGISK_VER=29.0
+export MAGISK_VER_CODE=29000
+export MODPATH='@MODPATH@'
+export TMPDIR='@TMPDIR@'
+export ZIPFILE='@ZIPFILE@'
+export SKYWARD_STAGE='@STAGE@'
+export PATH="@BIN@:$PATH"
+
+ui_print() { echo "$@"; }
+abort() { echo "$@"; exit 1; }
+grep_prop() {
+  local reg="s/^$1=//p"
+  shift
+  local files="$@"
+  [ -n "$files" ] || files=/system/build.prop
+  cat $files 2>/dev/null | sed -n "$reg" | head -n 1
+}
+set_perm() {
+  chown "$2:$3" "$1" 2>/dev/null
+  chmod "$4" "$1" 2>/dev/null
+  return 0
+}
+set_perm_recursive() {
+  find "$1" -type d 2>/dev/null | while read -r d; do chown "$2:$3" "$d" 2>/dev/null; chmod "$4" "$d" 2>/dev/null; done
+  find "$1" -type f 2>/dev/null | while read -r f; do chown "$2:$3" "$f" 2>/dev/null; chmod "$5" "$f" 2>/dev/null; done
+  return 0
+}
+"##;
+
+/// 装一个模块：`module.prop` 说它叫什么，包里的东西进
+/// `/data/adb/modules/<id>`。带 `customize.sh` 的（LSPosed 这类要在里面挑架构、
+/// 摆 zygisk 目录、改可执行位）照 Magisk 的方式跑一遍那段脚本，脚本里那句
+/// `unzip` 换成从已经解好的树上搬 —— 模块的条目常是 XZ 压缩，toybox 解不了，
+/// 所以整份先由这里解开（2026-11-25：LSPosed v2.2.1-7949 以前被当成刷机包跑
+/// update-binary，报「安装脚本运行失败，退出码为 1」）。
 fn install_module(path: &str) -> Result<String, String> {
     use std::io::Read;
     use std::os::unix::fs::PermissionsExt;
+
+    const MODULES: &str = "/data/adb/modules";
+    const WORK: &str = "/data/local/tmp/skyward-module";
+
     let file = std::fs::File::open(path).map_err(|e| format!("{path}: {e}"))?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| format!("{path} is not a zip: {e}"))?;
-    // The folder the module sits in inside the zip: the shortest path to a
-    // module.prop. Modules are packed both at the root and inside one folder.
+    // 模块可能套一层文件夹：找最短的那条路通往 module.prop。
     let mut prefix: Option<String> = None;
     for i in 0..zip.len() {
         let name = zip.by_index(i).map_err(|e| format!("{path}: {e}"))?.name().to_string();
+        if name.ends_with('/') {
+            continue;
+        }
         if let Some(here) = name.strip_suffix("module.prop") {
             let here = here.to_string();
             if prefix.as_ref().is_none_or(|p| here.len() < p.len()) {
@@ -5555,10 +5735,12 @@ fn install_module(path: &str) -> Result<String, String> {
     }
     let prefix = prefix.ok_or_else(|| format!("{path} carries no module.prop"))?;
     let prop = {
-        let mut entry = zip.by_name(&format!("{prefix}module.prop")).map_err(|e| format!("{path}: {e}"))?;
-        let mut text = String::new();
-        entry.read_to_string(&mut text).map_err(|e| format!("{path}: {e}"))?;
-        text
+        let mut bytes = Vec::new();
+        {
+            let mut entry = zip.by_name(&format!("{prefix}module.prop")).map_err(|e| format!("{path}: {e}"))?;
+            entry.read_to_end(&mut bytes).map_err(|e| format!("{path}: {e}"))?;
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
     };
     let field = |key: &str| {
         let want = format!("{key}=");
@@ -5571,30 +5753,116 @@ fn install_module(path: &str) -> Result<String, String> {
     if id.is_empty() || id.contains('/') || id.contains("..") {
         return Err("the module names no folder to sit in".into());
     }
-    let dest = std::path::Path::new("/data/adb/modules").join(&id);
-    if dest.exists() {
-        std::fs::remove_dir_all(&dest).map_err(|e| format!("clear {}: {e}", dest.display()))?;
+
+    let dest = std::path::Path::new(MODULES).join(&id);
+    let staging = std::path::Path::new(MODULES).join(format!(".{id}.staging"));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging).map_err(|e| format!("clear {}: {e}", staging.display()))?;
     }
-    std::fs::create_dir_all(&dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+    std::fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    // 整份解开：安装脚本要自己挑文件，先摆成它以为的样子。
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).map_err(|e| format!("{path}: {e}"))?;
-        let name = entry.name().to_string();
+        let (name, mode, data) = {
+            let mut entry = zip.by_index(i).map_err(|e| format!("{path}: {e}"))?;
+            let name = entry.name().to_string();
+            let mode = entry.unix_mode().unwrap_or(0o644);
+            let mut data = Vec::new();
+            if !name.ends_with('/') {
+                entry.read_to_end(&mut data).map_err(|e| format!("{path}: {name}: {e}"))?;
+            }
+            (name, mode, data)
+        };
         let Some(rest) = name.strip_prefix(prefix.as_str()) else { continue };
         if rest.is_empty() || name.ends_with('/') {
             continue;
         }
-        let at = dest.join(rest);
+        let at = staging.join(rest);
         if let Some(parent) = at.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut data = Vec::new();
-        entry.read_to_end(&mut data).map_err(|e| format!("{path}: {e}"))?;
         std::fs::write(&at, &data).map_err(|e| format!("write {}: {e}", at.display()))?;
-        // 脚本要能执行，其余按普通文件。
-        let mode = if rest.ends_with(".sh") { 0o755 } else { 0o644 };
+        let mode = if mode & 0o111 != 0 { 0o755 } else { 0o644 };
         let _ = std::fs::set_permissions(&at, std::fs::Permissions::from_mode(mode));
     }
+
+    // 带安装脚本的：跑一遍，让它自己挑架构、摆 zygisk 目录、改可执行位。
+    let customize = staging.join("customize.sh");
+    if customize.exists() {
+        let work = std::path::Path::new(WORK);
+        let _ = std::fs::remove_dir_all(work);
+        std::fs::create_dir_all(work.join("bin")).map_err(|e| format!("{}: {e}", work.display()))?;
+        write_script(&work.join("bin/unzip"), STUB_UNZIP)?;
+        write_script(&work.join("bin/magisk"), STUB_MAGISK)?;
+        let (arch, abi) = match std::env::consts::ARCH {
+            "aarch64" => ("arm64", "arm64-v8a"),
+            "arm" => ("arm", "armeabi-v7a"),
+            "x86_64" => ("x64", "x86_64"),
+            _ => ("arm64", "arm64-v8a"),
+        };
+        let api = skyward_sys::prop("ro.build.version.sdk").unwrap_or_else(|| "35".into());
+        let env = ENV_SH
+            .replace("@ARCH@", arch)
+            .replace("@ABI@", abi)
+            .replace("@API@", api.trim())
+            .replace("@MODPATH@", &staging.to_string_lossy())
+            .replace("@TMPDIR@", &work.to_string_lossy())
+            .replace("@STAGE@", &staging.to_string_lossy())
+            .replace("@ZIPFILE@", path)
+            .replace("@BIN@", &work.join("bin").to_string_lossy());
+        write_script(&work.join("env.sh"), &env)?;
+        // 脚本常拿 Magisk 预放进 TMPDIR 的 module.prop 报一句版本号。
+        let _ = std::fs::copy(staging.join("module.prop"), work.join("module.prop"));
+        let line = format!("cd /; . {}; . {}", shq(&work.join("env.sh")), shq(&customize));
+        let out = std::process::Command::new("/system/bin/sh")
+            .arg("-c")
+            .arg(&line)
+            .output()
+            .map_err(|e| format!("run the module's install script: {e}"))?;
+        let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let lines: Vec<&str> = said.lines().collect();
+        for one in lines.iter().rev().take(12).rev() {
+            let _ = skyward_sys::kmsg(&format!("module: {one}"));
+        }
+        let _ = std::fs::remove_dir_all(work);
+        if !out.status.success() {
+            let tail: Vec<&str> = lines.iter().filter(|l| !l.trim().is_empty()).rev().take(4).copied().collect::<Vec<_>>().into_iter().rev().collect();
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(format!(
+                "its install script ended with {}: {}",
+                out.status.code().unwrap_or(-1),
+                tail.join(" / ")
+            ));
+        }
+    }
+
+    // 装完 META-INF 与每个条目旁边那份 .sha256 就没用了，Magisk 也不留。
+    let _ = std::fs::remove_dir_all(staging.join("META-INF"));
+    if let Ok(entries) = std::fs::read_dir(&staging) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.file_name().map(|n| n.to_string_lossy().ends_with(".sha256")).unwrap_or(false) {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).map_err(|e| format!("clear {}: {e}", dest.display()))?;
+    }
+    std::fs::rename(&staging, &dest).map_err(|e| format!("move into {}: {e}", dest.display()))?;
     Ok(id)
+}
+
+/// 把一段脚本写成可执行文件。
+fn write_script(at: &std::path::Path, text: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(at, text).map_err(|e| format!("write {}: {e}", at.display()))?;
+    std::fs::set_permissions(at, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("{}: {e}", at.display()))
+}
+
+/// 单引号包起来，交给 sh。
+fn shq(at: &std::path::Path) -> String {
+    format!("'{}'", at.to_string_lossy().replace('\'', "'\\''"))
 }
 
 

@@ -2097,6 +2097,20 @@ fn finished(
             out.extend(hits(&next.rows, &[Action::Open(Screen::Systems)]));
             afterwards_of(c, cx, next.bottom, true)
         }
+        Outcome::ModuleInstalled { id } => {
+            // 模块不写分区，也不是刷机包：它的 update-binary 是 Magisk 自己跑的
+            // 那一段，装进 /data/adb/modules 就等下次启动由 root 方案加载。
+            let detail = tr!(
+                l,
+                "模块 {id} 已放入 /data/adb/modules，下次启动时加载。",
+                "模組 {id} 已放入 /data/adb/modules，下次啟動時載入。",
+                "The module {id} is in /data/adb/modules and loads at the next start."
+            );
+            let y = widgets::list(c, t, f, top, &[standing(l.pick(["模块已安装", "模組已安裝", "Module installed"]), GREEN, Icon::Install, &detail)]).bottom;
+            let next = widgets::list(c, t, f, y + gap, &[restart, again]);
+            out.extend(hits(&next.rows, &[Action::RebootTo(Target::System), another]));
+            afterwards_of(c, cx, next.bottom, true)
+        }
         Outcome::Cancelled => {
             let y = widgets::list(c, t, f, top, &[standing(l.pick(["已取消", "已取消", "Cancelled"]), SLATE, Icon::Install, nothing_written)]).bottom;
             let next = widgets::list(c, t, f, y + gap, &[again]);
@@ -2930,15 +2944,28 @@ pub fn serve(cx: &Ctx) -> Frame {
     let bottom;
     if let Serving::Running { at, served } = &s.serving {
         let said = tr!(l, "已应答 {served} 次请求", "已回應 {served} 次請求", "{served} requests answered");
+        // 没有连上 WLAN 时端口其实是开着的，只是没有地址可以给别人：
+        // 编一个 `http://<phone>:8080/` 出来，照着敲只会「找不到主机」
+        // （2026-11-25）。
+        let address = match at {
+            Some(at) => at.clone(),
+            None => l
+                .pick([
+                    "WLAN 未连接，连上后再看地址",
+                    "Wi-Fi 未連線，連上後再看位址",
+                    "Not joined to Wi-Fi; the address shows once it is",
+                ])
+                .to_owned(),
+        };
         bottom = widgets::info_card(&mut c, t, f, below + m.card_gap, &[
-            (l.pick(["地址", "位址", "Address"]), at.clone()),
+            (l.pick(["地址", "位址", "Address"]), address),
             (l.pick(["请求", "請求", "Requests"]), said),
         ]);
     } else {
         let hint = l.pick([
-            "在同一网络下用浏览器打开上面的地址，即可上传或下载这个文件夹里的文件。WLAN 需先连接。",
-            "在同一網路下用瀏覽器開啟上面的位址，即可上傳或下載這個資料夾裡的檔案。Wi-Fi 需先連線。",
-            "Open the address above in a browser on the same network to move files in and out of this folder. Wi-Fi has to be joined first.",
+            "启动服务后，在同一网络下用浏览器打开给出的地址，即可上传或下载这个文件夹里的文件。WLAN 需先连接。",
+            "啟動服務後，在同一網路下用瀏覽器開啟給出的位址，即可上傳或下載這個資料夾裡的檔案。Wi-Fi 需先連線。",
+            "Once the server is on, open the address it gives in a browser on the same network to move files in and out of this folder. Wi-Fi has to be joined first.",
         ]);
         bottom = widgets::footnote(&mut c, t, f, below, hint);
     }
@@ -3212,7 +3239,10 @@ pub fn avb(cx: &Ctx) -> Frame {
         "Into Skyward/vbmeta on internal storage; the whole file is checked before it goes back",
     ]))]);
     out.extend(hits(&keep.rows, &[Action::VbmetaDump]));
-    let mut y = keep.bottom;
+    // 两张卡片之间要留一道：`list` 的 bottom 是最后一张的底边，直接接上
+    // 就成了上下贴死的一坨（2026-11-25，真机上看「备份当前槽的 vbmeta」
+    // 与「A · 回滚 0」挤在一起）。
+    let mut y = keep.bottom + t.m.card_gap;
     let chosen_at = s.vbmeta_choice;
     match &s.vbmeta_kept {
         Some(Ok(list)) if !list.is_empty() => {

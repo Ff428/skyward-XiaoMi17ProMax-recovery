@@ -1550,6 +1550,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lzma-rust2"
+version = "0.16.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca93e534d1142d1d0dcca6d25fe302508a5dfb40b302802904577725ea0b695b"
+dependencies = [
+ "sha2 0.11.1",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3538,6 +3547,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "indexmap",
+ "lzma-rust2",
  "memchr",
  "typed-path 0.12.3",
 ]

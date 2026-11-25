@@ -84,8 +84,11 @@ pub enum Serving {
     #[default]
     Off,
     Running {
-        /// The address a browser on the same network opens.
-        at: String,
+        /// The address a browser on the same network opens. `None` while no
+        /// network is joined: the port is open but nothing can reach it yet,
+        /// and a made-up address (`http://<phone>:8080/`) read as if it were
+        /// one (2026-11-25).
+        at: Option<String>,
         /// How many requests it has answered, so the page shows it is alive.
         served: u64,
     },

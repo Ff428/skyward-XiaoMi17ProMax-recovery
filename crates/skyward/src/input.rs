@@ -54,10 +54,24 @@ fn key_of(code: KeyCode) -> Option<Key> {
     }
 }
 
-/// A device read failed because it was unplugged.
+/// A device read failed because it was unplugged, or because the driver
+/// under it went away: the panel is let go of and looked for again either
+/// way. `ENODEV` is the plain case; a controller that was reset under an open
+/// node answers `EIO` or `ENXIO` instead, and one the kernel shut down
+/// answers `ESHUTDOWN` -- reading only `ENODEV` left the pages deaf until
+/// the recovery was restarted (2026-11-25, after `adb sideload`).
 fn gone(e: &io::Error) -> bool {
-    e.raw_os_error() == Some(libc::ENODEV)
+    matches!(e.raw_os_error(), Some(libc::ENODEV | libc::ENXIO | libc::EIO | libc::ESHUTDOWN | libc::EBADF))
 }
+
+/// No report from the panel for this long while the pages think a finger is
+/// down: the panel is read back, and a finger it no longer sees is let go of.
+/// A panel at rest sends nothing, so this only runs while something is held.
+const STALE_REPORT: Duration = Duration::from_millis(2500);
+
+/// After a panel's read failed, wait this long before opening it again: a
+/// node that answers an error every time must not be reopened every turn.
+const PANEL_RETRY: Duration = Duration::from_secs(2);
 
 /// Slot 0's value of a multitouch axis. The kernel keeps multitouch values
 /// per slot, apart from the axis state the ABS queries return, and hands
@@ -98,6 +112,11 @@ struct Panel {
     /// 面板上时接管，按下那一条就可能没送到，只剩一串移动 —— 页面从此不认这
     /// 一根手指，看着就是「点了没反应」。没送过就先补一个按下（2026-11-23）。
     sent_down: bool,
+    /// 面板最后一次报告的时刻，`monotonic_ms` 的钟。按住的时候它不动，
+    /// 就是这一根手指的下文丢了（2026-11-25）。
+    last_report: u64,
+    /// 上一次因内核丢事件而重读状态的时刻，报错也只说一次。
+    dropped_at: Option<u64>,
 }
 
 impl Panel {
@@ -138,6 +157,8 @@ impl Panel {
             dropped: false,
             first_told: false,
             sent_down: false,
+            last_report: monotonic_ms(),
+            dropped_at: None,
         };
         // The kernel drops a position equal to the one a slot already holds,
         // so a touch landing where the last one lifted carries no position;
@@ -172,10 +193,35 @@ impl Panel {
         for e in events {
             match e.destructure() {
                 // Skip to the next report and read the state back there.
-                EventSummary::Synchronization(_, SynchronizationCode::SYN_DROPPED, _) => self.dropped = true,
+                EventSummary::Synchronization(_, SynchronizationCode::SYN_DROPPED, _) => {
+                    self.dropped = true;
+                    // 丢事件在这里说一声：真机上「屏幕亮着、点哪都不动」的
+                    // 那几次，日志里连一句丢事件都没有，事后分不清是面板没
+                    // 报还是自己把它丢了（2026-11-25）。两秒最多一句。
+                    let now = monotonic_ms();
+                    if self.dropped_at.is_none_or(|at| now.saturating_sub(at) >= 2000) {
+                        self.dropped_at = Some(now);
+                        let _ = skyward_sys::kmsg(&format!(
+                            "the panel's events were dropped by the kernel at {now} ms; its state is read back"
+                        ));
+                    }
+                }
                 EventSummary::Synchronization(_, SynchronizationCode::SYN_REPORT, _) => {
+                    self.last_report = monotonic_ms();
                     if std::mem::take(&mut self.dropped) {
-                        self.resync()?;
+                        // 状态读不回来不结束这一条流：把手指状态清干净，
+                        // 下一次按下必定重新发一条按下。以前这里把错误往上传，
+                        // 主循环每轮都在读输入处失败，页面照画、触摸全哑，
+                        // 只能重启恢复（2026-11-25）。
+                        if let Err(e) = self.resync() {
+                            let _ = skyward_sys::kmsg(&format!(
+                                "the panel's state is not read back ({e}); a finger held is let go of"
+                            ));
+                            self.down = false;
+                            self.was_down = false;
+                            self.sent_down = false;
+                            self.moved = false;
+                        }
                     }
                     let time = e.as_ref().time;
                     let at = time.tv_sec as u64 * 1000 + time.tv_usec as u64 / 1000;
@@ -228,6 +274,42 @@ impl Panel {
         }
         Ok(())
     }
+
+    /// 按住不放的时候，面板的下文要是丢了（抬手那一条没送来，或驱动在
+    /// 底下被复位），页面会一直以为手指还在：之后再按只有移动、没有按下，
+    /// 看着就是整块屏幕点不动，而时钟照走。隔一段时间没有报告就把它读回来，
+    /// 面板也不再报的手指，替它抬一次手（2026-11-25）。
+    fn catch_up(&mut self, out: &mut Vec<Event>) {
+        let now = monotonic_ms();
+        // 没有手指按着的时候面板本来就安静，不打扰它。
+        if !self.down && !self.sent_down {
+            self.last_report = now;
+            return;
+        }
+        if now.saturating_sub(self.last_report) < STALE_REPORT.as_millis() as u64 {
+            return;
+        }
+        self.last_report = now;
+        self.moved = false;
+        let resynced = self.resync();
+        if resynced.is_ok() && self.down {
+            // 面板说还按着：让页面重新认这一根（下一个报告会补一条按下）。
+            self.sent_down = false;
+            return;
+        }
+        if resynced.is_err() {
+            let _ = skyward_sys::kmsg("the panel's state is still not read back; its finger is let go of");
+        }
+        if self.sent_down {
+            self.sent_down = false;
+            out.push(Event::Touch(Touch::Up, now));
+            let _ = skyward_sys::kmsg(&format!(
+                "a finger the panel no longer reports is let go of at {now} ms: the page is told, so it does not stay pressed"
+            ));
+        }
+        self.down = false;
+        self.was_down = false;
+    }
 }
 
 /// The touchscreen and the hardware buttons. /dev/input is watched, so a
@@ -247,6 +329,9 @@ pub struct Inputs {
     touch_writes: Vec<Write>,
     /// 上一次写离现在多久：接管、主页上来、亮屏这三处都会写，挨太近就只写一次。
     writes_at: Option<Instant>,
+    /// 面板读错之后先等一会儿再把它找回来：节点还在、读还是错的时候，
+    /// 别每一轮都重开一遍（2026-11-25）。
+    panel_wait_until: Option<Instant>,
     w: f32,
     h: f32,
 }
@@ -275,6 +360,7 @@ impl Inputs {
             seen: HashSet::new(),
             touch_writes,
             writes_at: None,
+            panel_wait_until: None,
             w: w as f32,
             h: h as f32,
         };
@@ -291,6 +377,11 @@ impl Inputs {
     /// button. A panel taken in is told what the device description writes
     /// to the touchscreen.
     fn scan(&mut self) -> Result<()> {
+        // 面板刚读过一次是错的：退一会儿再枚举。节点还在、读还是错的时候，
+        // 每轮都重开一遍只是空转（2026-11-25）。
+        if self.panel.is_none() && self.panel_wait_until.is_some_and(|at| at.elapsed() < PANEL_RETRY) {
+            return Ok(());
+        }
         let mut candidates: Vec<Panel> = Vec::new();
         for (path, dev) in evdev::raw_stream::enumerate() {
             if !self.seen.insert(path.clone()) {
@@ -372,6 +463,7 @@ impl Inputs {
             if let Some(panel) = &self.panel {
                 self.wakeful.add(panel.dev.as_raw_fd())?;
             }
+            self.panel_wait_until = None;
             self.tell(&self.touch_writes)?;
             self.writes_at = Some(Instant::now());
         }
@@ -383,6 +475,7 @@ impl Inputs {
     fn take_panel(&mut self, path: std::path::PathBuf, dev: RawDevice) -> Result<()> {
         self.wakeful.add(dev.as_raw_fd())?;
         self.panel = Some(Panel::new(path, dev)?);
+        self.panel_wait_until = None;
         self.tell(&self.touch_writes)?;
         self.writes_at = Some(Instant::now());
         Ok(())
@@ -476,21 +569,60 @@ impl Inputs {
     }
 
     /// Everything the devices have queued, as touches and key presses.
-    pub fn read(&mut self) -> Result<Vec<Event>> {
-        if self.changed()? {
-            self.scan()?;
-        }
+    ///
+    /// 这里不把错误交给主循环：一轮报错会让「读输入」整个跳过，页面照画、
+    /// 时钟照走、一个触摸也处理不到 —— 真机上 `adb sideload` 之后那次
+    /// 「点哪都没反应、屏幕还在走」就是这样（2026-11-25）。设备读不动就把它
+    /// 放掉，下一轮 /dev/input 的变动或主循环仍会重新找它。
+    pub fn read(&mut self) -> Vec<Event> {
         let mut out = Vec::new();
+        match self.changed() {
+            Ok(true) => {
+                if let Err(e) = self.scan() {
+                    let _ = skyward_sys::kmsg(&format!("/dev/input is not read: {e:#}"));
+                }
+            }
+            Ok(false) => {}
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("/dev/input changes are not read: {e:#}"));
+            }
+        }
+        // 面板被放掉之后节点未必再变动一次：退避过了就自己再去找它，
+        // 否则一次读错等于这一屏从此没有触摸（2026-11-25）。
+        if self.panel.is_none() && self.panel_wait_until.is_some_and(|at| at.elapsed() >= PANEL_RETRY) {
+            self.panel_wait_until = Some(Instant::now());
+            if let Err(e) = self.scan() {
+                let _ = skyward_sys::kmsg(&format!("/dev/input is not read: {e:#}"));
+            }
+        }
+        let mut drop_panel = None;
         if let Some(panel) = &mut self.panel {
             match panel.read(self.w, self.h, &mut out) {
-                Ok(()) => {}
-                Err(e) if gone(&e) => {
-                    let _ = skyward_sys::kmsg(&format!("input {}: removed", panel.path.display()));
-                    self.seen.remove(&panel.path);
-                    self.panel = None;
+                Ok(()) => panel.catch_up(&mut out),
+                Err(e) => {
+                    let said = if gone(&e) {
+                        format!("input {}: removed", panel.path.display())
+                    } else {
+                        format!("input {}: the panel is not read: {e}", panel.path.display())
+                    };
+                    let _ = skyward_sys::kmsg(&said);
+                    // 面板被放掉之前，替按着的那根手指抬一次手：页面才不会
+                    // 停在「按住」上，等它回来还能接着点。
+                    if panel.sent_down {
+                        out.push(Event::Touch(Touch::Up, monotonic_ms()));
+                    }
+                    drop_panel = Some(panel.path.clone());
                 }
-                Err(e) => return Err(e).context("read touch events"),
             }
+        }
+        if let Some(path) = drop_panel {
+            let _ = skyward_sys::kmsg(&format!(
+                "the panel {} is let go of; it is looked for again shortly",
+                path.display()
+            ));
+            self.seen.remove(&path);
+            self.panel = None;
+            self.panel_wait_until = Some(Instant::now());
         }
         let mut removed = Vec::new();
         for (i, (path, b)) in self.buttons.iter_mut().enumerate() {
@@ -507,17 +639,22 @@ impl Inputs {
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {}
-                Err(e) if gone(&e) => {
-                    let _ = skyward_sys::kmsg(&format!("input {}: removed", path.display()));
+                // 读不动的按键设备一律放掉：一个坏了不该让整块屏幕哑掉。
+                Err(e) => {
+                    let said = format!(
+                        "input {}: {}{e}",
+                        path.display(),
+                        if gone(&e) { "removed: " } else { "the keys are not read: " }
+                    );
+                    let _ = skyward_sys::kmsg(&said);
                     removed.push(i);
                 }
-                Err(e) => return Err(e).context("read button events"),
             }
         }
         for i in removed.into_iter().rev() {
             let (path, _) = self.buttons.remove(i);
             self.seen.remove(&path);
         }
-        Ok(out)
+        out
     }
 }
