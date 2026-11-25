@@ -5186,7 +5186,7 @@ pub fn wlan_network(cx: &Ctx) -> Frame {
     let Some(j) = joined else {
         let items = [
             detail(Outline::Wifi, l.pick(["频段", "頻段", "Bands"]), fmt::bands(l, network.bands)),
-            detail(Outline::Signal, signal, fmt::signal(l, network.signal).to_string()),
+            detail(Outline::Signal, signal, fmt::signal_known(l, network.signal)),
             security,
         ];
         let y = widgets::detail_grid(&mut c, t, f, y, &items);
@@ -5214,7 +5214,7 @@ pub fn wlan_network(cx: &Ctx) -> Frame {
             }
         }
         _ => {
-            items.push(detail(Outline::Signal, signal, fmt::signal(l, network.signal).to_string()));
+            items.push(detail(Outline::Signal, signal, fmt::signal_known(l, network.signal)));
             items.push(security);
         }
     }

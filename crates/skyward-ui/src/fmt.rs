@@ -1343,6 +1343,15 @@ pub fn signal(l: Lang, dbm: i32) -> &'static str {
     })
 }
 
+/// 一份 dBm，没扫到这张网时它是 0：那不是一个信号，别写成「极佳」
+/// （2026-11-25 真机：已保存的网络删之前那一页写着「信号强度 极佳」）。
+pub fn signal_known(l: Lang, dbm: i32) -> String {
+    match dbm {
+        0 => l.pick(["未知", "未知", "Unknown"]).to_owned(),
+        d => signal(l, d).to_owned(),
+    }
+}
+
 /// The bands a network is on, as the tag after its name: none for 2.4 GHz
 /// alone, as the stock WLAN page shows it.
 pub fn band_tag(b: Bands) -> Option<String> {
@@ -1382,7 +1391,16 @@ pub fn wlan_value(l: Lang, w: &Wlan) -> &str {
         // 与实际感受更贴近（2026-11-18）。
         (Power::Starting, _) => l.pick(["正在连接", "正在連線", "Connecting"]),
         (Power::On, Some(Joined { stage: WlanStage::Connected(_), name, .. })) => name,
-        (Power::On, Some(_)) => l.pick(["正在连接", "正在連線", "Connecting"]),
+        // 连不上的那几个终态照实说：一直留着「正在连接」是错的（2026-11-25
+        // 真机，密码错误、未找到该网络之后首页一直这么写着）。
+        (Power::On, Some(Joined { stage, .. })) => l.pick(match stage {
+            WlanStage::Joining | WlanStage::Addressing => ["正在连接", "正在連線", "Connecting"],
+            WlanStage::WrongPassword => ["密码错误", "密碼錯誤", "Wrong password"],
+            WlanStage::NotFound => ["未找到该网络", "找不到這個網路", "Network not found"],
+            WlanStage::Failed => ["连接失败", "連線失敗", "Couldn't connect"],
+            WlanStage::NoAddress(_) => ["无法获取 IP 地址", "無法取得 IP 位址", "Couldn't get an IP"],
+            WlanStage::Connected(_) => ["已连接", "已連線", "Connected"],
+        }),
         (Power::On, None) => l.pick(["未连接", "未連線", "Not connected"]),
     }
 }
