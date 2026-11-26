@@ -80,14 +80,17 @@ probe = "http://connect.rom.miui.com/generate_204"
 [update]
 server = "https://update.miui.com/updates/miotaV3.php"
 
-# The stock build the recovery is made on: the Chinese system's OS4.0.8.0,
+# The stock build the recovery is made on: the Chinese system's OS4.0.6.0,
 # the build this fork is made for, whose full update package on the phone
 # maker's own download server holds the recovery partition the recovery is
-# built on top of. scripts/augment_stock.py then adds the HAL layer in
+# built on top of. The release's file name says 4.0.8.0 (the delivery
+# code name), but this block keeps the package's own version: the URL below
+# is the maker's real one, and CI downloads it when stock/ has no cache.
+# scripts/augment_stock.py then adds the HAL layer in
 # resources/popsicle/recovery-hal.zip on those bytes before packing.
 [stock]
-version = "OS4.0.8.0.XPBCNXM"
-package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS4.0.8.0.XPBCNXM/popsicle-ota_full-OS4.0.8.0.XPBCNXM-user-17.0-13c9e292db.zip"
+version = "OS4.0.6.0.XPBCNXM"
+package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS4.0.6.0.XPBCNXM/popsicle-ota_full-OS4.0.6.0.XPBCNXM-user-17.0-13c9e292db.zip"
 # The SHA-256 of the recovery partition inside that package, so a package the
 # phone maker swaps out from under the same URL is caught instead of packed.
 # See docs/BUILD.md (packing details and following a new stock build).
