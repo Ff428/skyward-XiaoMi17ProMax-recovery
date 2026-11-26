@@ -7,6 +7,7 @@ use crate::app::{
     BACKUP_PARTS, DATA_ERASED, DATA_PARTITION, DOWNLOADS, FASTBOOT_CHOICES, SCREEN_OFF, TARGETS, THERMAL_LIMIT_LEAST, THERMAL_LIMIT_MOST, TIME_ZONES, UTC, USB_DRIVE_UNREADABLE,
     USB_DRIVE_WANTED, WIPES, installs, listed, starting,
 };
+use crate::app::{is_newer, KernelSuEnd, KernelSuJob};
 use crate::canvas::Canvas;
 use crate::color::Rgba;
 use crate::editor;
@@ -70,6 +71,10 @@ pub struct Band {
 pub fn render(screen: Screen, cx: &Ctx) -> Frame {
     match screen {
         Screen::Decrypt => decrypt(cx),
+        Screen::Root => root(cx),
+        Screen::KernelSu => kernel_su(cx),
+        Screen::KernelSuKmi => kernel_su_kmi(cx),
+        Screen::Magisk => magisk(cx),
         Screen::Home => home(cx),
         Screen::Settings => settings(cx),
         Screen::Reboot => reboot(cx),
@@ -228,6 +233,8 @@ pub fn confirm_label(which: Confirm, s: &State) -> (&'static str, bool) {
     const INSTALL: Text = ["滑动以安装", "滑動以安裝", "Slide to install"];
     let (label, danger) = match which {
         Confirm::Avb => (["滑动以写入", "滑動以寫入", "Slide to write"], true),
+        Confirm::KernelSu => (["滑动以写入 KernelSU", "滑動以寫入 KernelSU", "Slide to write KernelSU"], true),
+        Confirm::Magisk => (["滑动以写入 Magisk", "滑動以寫入 Magisk", "Slide to write Magisk"], true),
         Confirm::Vbmeta => (["滑动以写回", "滑動以寫回", "Slide to put back"], true),
         Confirm::Filesystem => match s.fs_action {
             FsAction::Repair => (["滑动以修复", "滑動以修復", "Slide to repair"], true),
@@ -3436,6 +3443,388 @@ pub fn fetch(cx: &Ctx) -> Frame {
     Frame { header: false, caret: Some(field.caret), ..Frame::new(t, c, out, title, 0.0) }
 }
 
+/// Root 自己的页：KernelSU 与 Magisk 各一行看现状，下面两张卡直接在线写入。
+pub fn root(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = t.m.content_top;
+
+    let (kernel_su, magisk) = (kernel_su_saying(&s), magisk_saying(&s));
+    let rows = [
+        Row::new("KernelSU").icon(BLUE, Icon::Shield).trail(Trail::Value(&kernel_su)),
+        Row::new("Magisk").icon(PURPLE, Icon::Layers).trail(Trail::Value(&magisk)),
+        Row::new(l.pick(["模块管理", "模組管理", "Modules"])).icon(GREEN, Icon::Layers),
+    ];
+    let opens = [Action::Open(Screen::KernelSu), Action::Open(Screen::Magisk), Action::Open(Screen::Modules)];
+    let first = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&first.rows, &opens));
+    y = first.bottom + t.m.card_gap;
+
+    y = widgets::section(&mut c, t, f, y, l.pick(["在线安装", "線上安裝", "Install online"]));
+    let (ks_label, mg_label) = (
+        tr!(l, "滑动以在线写入 KernelSU", "滑動以線上寫入 KernelSU", "Slide to write KernelSU online"),
+        tr!(l, "滑动以在线写入 Magisk", "滑動以線上寫入 Magisk", "Slide to write Magisk online"),
+    );
+    let (ks_progress, ks_text) = write_state(s.kernel_su_job.as_ref(), s.root_bytes, l, &ks_label);
+    let (mg_progress, mg_text) = write_state(s.magisk_job.as_ref(), s.root_bytes, l, &mg_label);
+    for (label, progress, which) in [(ks_text, ks_progress, Confirm::KernelSu), (mg_text, mg_progress, Confirm::Magisk)] {
+        let track = widgets::confirm(&mut c, t, f, y, &label, false, progress);
+        out.push(Hit { rect: track, action: Action::Confirm(which) });
+        y = track.y + track.h + t.m.card_gap;
+    }
+
+    let note = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        y,
+        l.pick([
+            "素材在线取：ksud、对应 KMI 的模块与管理器 APK 都从 GitHub 下载；写之前先把原厂 boot 备份到 Skyward/root。只写入当前槽。",
+            "素材線上取：ksud、對應 KMI 的模組與管理器 APK 都從 GitHub 下載；寫之前先把原廠 boot 備份到 Skyward/root。只寫入目前槽。",
+            "Payloads come from GitHub: ksud, the matching KMI module and the manager APK. The stock boot image is backed up to Skyward/root before anything is written. Only the current slot is written.",
+        ]),
+    );
+    Frame::new(t, c.crop_height(fitted(t, note)), out, l.pick(["Root 管理", "Root 管理", "Root"]), t.m.content_top)
+}
+
+/// KernelSU 的页：现状、要写的 KMI，以及写进当前槽的 boot 镜像。
+pub fn kernel_su(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = t.m.content_top;
+
+    let status = s.kernel_su.as_ref().and_then(|r| r.as_ref().ok());
+    let why = match s.kernel_su.as_ref() {
+        Some(Err(why)) => Some(why.clone()),
+        _ => None,
+    };
+    let mut rows = Vec::new();
+    let version = status.and_then(|st| st.version.clone()).unwrap_or_else(|| l.pick(["无", "無", "None"]).into());
+    let (slot_label, lock_label, latest_label) = (
+        tr!(l, "当前槽位", "目前槽位", "Current slot"),
+        tr!(l, "开机锁", "開機鎖", "Bootloader"),
+        tr!(l, "在线最新", "線上最新", "Latest online"),
+    );
+    let latest = online_saying(l, s.latest_kernelsu.as_deref(), status.and_then(|st| st.version.as_deref()), !status.is_some_and(|st| st.installed));
+    match status {
+        Some(st) => {
+            let state_row = if st.installed {
+                l.pick(["已安装", "已安裝", "Installed"])
+            } else {
+                l.pick(["未安装", "未安裝", "Not installed"])
+            };
+            rows.push(Row::new(state_row).trail(Trail::Value(&version)));
+            rows.push(Row::new(&latest_label).trail(Trail::Value(&latest)));
+            if let Some(target) = &st.backup_target {
+                rows.push(Row::new(l.pick(["已写入", "已寫入", "Written to"])).trail(Trail::Value(target)));
+            }
+            if let Some(slot) = &st.slot {
+                rows.push(Row::new(&slot_label).trail(Trail::Value(slot)));
+            }
+            let locked = if st.unlocked {
+                l.pick(["已解锁", "已解鎖", "Unlocked"])
+            } else {
+                l.pick(["已锁定", "已鎖定", "Locked"])
+            };
+            rows.push(Row::new(&lock_label).trail(Trail::Value(locked)));
+        }
+        None => rows.push(Row::new(l.pick(["读取失败", "讀取失敗", "Couldn't read"])).trail(Trail::None)),
+    }
+    let list = widgets::list(&mut c, t, f, y, &rows);
+    y = list.bottom + t.m.card_gap;
+
+    let said = match s.kernel_su_job.as_ref().map(|j| j.stage) {
+        Some(_) if s.kernel_su_job.as_ref().is_some_and(|j| j.outcome.is_none()) => {
+            l.pick(["正在写入 KernelSU…", "正在寫入 KernelSU…", "Writing KernelSU…"])
+        }
+        _ => l.pick(["写入 KernelSU", "寫入 KernelSU", "Write KernelSU"]),
+    };
+    let stage_note = widgets::footnote(&mut c, t, f, y, said);
+    y = stage_note + t.m.card_gap;
+    let idle = tr!(l, "滑动以写入 KernelSU", "滑動以寫入 KernelSU", "Slide to write KernelSU");
+    let (progress, write_label) = write_state(s.kernel_su_job.as_ref(), s.root_bytes, l, &idle);
+    let track = widgets::confirm(&mut c, t, f, y, &write_label, false, progress);
+    out.push(Hit { rect: track, action: Action::Confirm(Confirm::KernelSu) });
+    y = track.y + track.h + t.m.card_gap;
+
+    if let Some(st) = status {
+        y = widgets::section(&mut c, t, f, y, l.pick(["KMI", "KMI", "KMI"]));
+        let kmis: Vec<Row> = st
+            .kmis
+            .iter()
+            .enumerate()
+            .map(|(k, row)| Row::new(&row.id).subtitle(&row.target).trail(Trail::Check(s.kernel_su_kmi == Some(k) || st.default == Some(k))))
+            .collect();
+        let picks: Vec<Action> = (0..kmis.len()).map(Action::KernelSuKmi).collect();
+        let chosen = widgets::list(&mut c, t, f, y, &kmis);
+        out.extend(hits(&chosen.rows, &picks));
+        y = chosen.bottom + t.m.card_gap;
+    }
+    let note = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        y,
+        l.pick([
+            "默认按内核版本选择 KMI；如果本机需要别的 KMI，可以手动选择。只写入当前槽。",
+            "預設按核心版本選擇 KMI；如果本機需要別的 KMI，可以手動選擇。只寫入目前槽。",
+            "The KMI is picked by the kernel's version; choose another by hand where this phone needs it. Only the current slot is written.",
+        ]),
+    );
+    y = note + t.m.card_gap;
+    let online = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        y,
+        l.pick([
+            "从 GitHub 下载最新的 ksud、匹配的模块和管理器；需要网络。",
+            "從 GitHub 下載最新的 ksud、符合的模組與管理器；需要網路。",
+            "The newest ksud, the matching module and the manager are downloaded from GitHub; it needs the network.",
+        ]),
+    );
+    y = online + t.m.card_gap;
+    if let Some(why) = &why {
+        let at = widgets::footnote(&mut c, t, f, y, why);
+        y = at + t.m.card_gap;
+    }
+
+    // 只有本恢复模式真备份过原厂 boot，才有东西可恢复；这台机器的
+    // KernelSU 若是别的工具装的（没有 kernelsu.conf），这里就说清楚，
+    // 不摆一行点下去必然失败的「已恢复」（2026-11-26 真机）。
+    let bottom = if status.is_some_and(|st| st.has_backup) {
+        let target = st_target(status.and_then(|st| st.backup_target.clone()));
+        let saved_label = format!("{} {target}", tr!(l, "恢复原厂", "恢復原廠", "Restore stock"));
+        let saved = widgets::section(&mut c, t, f, y, &saved_label);
+        let row = Row::new(l.pick(["已恢复", "已恢復", "Restored"])).icon(SLATE, Icon::Restore);
+        let saved = widgets::list(&mut c, t, f, saved, &[row]);
+        out.extend(hits(&saved.rows, &[Action::RestoreKernelSu]));
+        saved.bottom
+    } else {
+        widgets::footnote(
+            &mut c,
+            t,
+            f,
+            y,
+            l.pick([
+                "这台机器的 KernelSU 不是本恢复模式装的，没有原厂 boot 备份可恢复。",
+                "這台機器的 KernelSU 不是本復原模式裝的，沒有原廠 boot 備份可還原。",
+                "KernelSU here was not installed by this recovery, so it has no stock boot backup to restore.",
+            ]),
+        )
+    };
+    Frame::new(t, c.crop_height(fitted(t, bottom)), out, l.pick(["KernelSU", "KernelSU", "KernelSU"]), t.m.content_top)
+}
+
+/// 写入卡该停在哪、写什么：滑到底开始后停在底并说「正在写入」；写完停在底说
+/// 「已写入」；失败回到原位，让手指知道可以再滑一次（2026-11-26）。
+fn write_state(job: Option<&KernelSuJob>, bytes: Option<(u64, Option<u64>, u64)>, l: Lang, idle: &str) -> (f32, String) {
+    match job {
+        Some(job) if job.outcome.is_none() => {
+            let worked = match bytes {
+                Some((done, Some(total), rate)) if total > 0 => format!("{}% · {}", done.saturating_mul(100) / total, per_second(rate)),
+                Some((done, None, rate)) => format!("{} · {}", size_text(done), per_second(rate)),
+                _ => tr!(l, "准备中…", "準備中…", "Preparing…"),
+            };
+            (1.0, format!("{} {}", tr!(l, "正在在线写入", "正在線上寫入", "Writing online"), worked))
+        }
+        Some(job) if let Some(KernelSuEnd::Failed(why)) = &job.outcome => {
+            (0.0, format!("{} · {}", tr!(l, "未写入", "未寫入", "Not written"), clip_saying(why)))
+        }
+        Some(_) => (1.0, tr!(l, "已写入", "已寫入", "Written")),
+        None => (0.0, idle.to_string()),
+    }
+}
+
+/// 在线那一版怎么写在页面上：比装着的这一版新就写「可升级」，一样或旧写
+/// 「已是最新」，装都没装就只写版本号（2026-11-26）。
+fn online_saying(l: Lang, online: Option<&str>, installed: Option<&str>, not_installed: bool) -> String {
+    let Some(online) = online else {
+        return tr!(l, "读取中…", "讀取中…", "Reading…");
+    };
+    if not_installed {
+        return online.to_string();
+    }
+    match is_newer(installed, Some(online)) {
+        Some(true) => format!("{online} · {}", tr!(l, "可升级", "可升級", "Update available")),
+        Some(false) => format!("{online} · {}", tr!(l, "已是最新", "已是最新", "Up to date")),
+        None => online.to_string(),
+    }
+}
+
+/// 每秒多少字节，写成人看得懂的样子。
+fn per_second(rate: u64) -> String {
+    if rate == 0 {
+        "…".to_string()
+    } else if rate >= 1 << 20 {
+        format!("{:.1} MiB/s", rate as f64 / (1u64 << 20) as f64)
+    } else {
+        format!("{} KiB/s", rate / 1024)
+    }
+}
+
+/// 一份文件多大，写成人看得懂的样子。
+fn size_text(bytes: u64) -> String {
+    if bytes >= 1 << 20 {
+        format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64)
+    } else {
+        format!("{} KiB", bytes / 1024)
+    }
+}
+
+/// The KMI the KernelSU page writes: the list, each one checked or not.
+pub fn kernel_su_kmi(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let y = t.m.content_top;
+    let st = s.kernel_su.as_ref().and_then(|r| r.as_ref().ok());
+    let rows: Vec<Row> = st
+        .map(|st| {
+            st.kmis
+                .iter()
+                .enumerate()
+                .map(|(k, row)| Row::new(&row.id).subtitle(&row.target).trail(Trail::Check(s.kernel_su_kmi == Some(k) || st.default == Some(k))))
+                .collect()
+        })
+        .unwrap_or_default();
+    let picks: Vec<Action> = (0..rows.len()).map(Action::KernelSuKmi).collect();
+    let list = widgets::list(&mut c, t, f, y, &rows);
+    out.extend(hits(&list.rows, &picks));
+    Frame::new(t, c.crop_height(fitted(t, list.bottom)), out, l.pick(["KMI", "KMI", "KMI"]), t.m.content_top)
+}
+
+/// Magisk 的页：现状与写进当前槽的 boot 镜像。
+pub fn magisk(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = t.m.content_top;
+    let st = s.magisk.as_ref().and_then(|r| r.as_ref().ok());
+    let version = st.and_then(|st| st.version.clone()).unwrap_or_else(|| l.pick(["无", "無", "None"]).into());
+    let (latest_label, latest) = (
+        tr!(l, "在线最新", "線上最新", "Latest online"),
+        online_saying(l, s.latest_magisk.as_deref(), st.and_then(|st| st.version.as_deref()), !st.is_some_and(|st| st.installed)),
+    );
+    let mut rows = Vec::new();
+    match st {
+        Some(st) => {
+            let state_row = if st.installed {
+                l.pick(["已安装", "已安裝", "Installed"])
+            } else {
+                l.pick(["未安装", "未安裝", "Not installed"])
+            };
+            rows.push(Row::new(state_row).trail(Trail::Value(&version)));
+            rows.push(Row::new(&latest_label).trail(Trail::Value(&latest)));
+            if let Some(target) = &st.backup_target {
+                rows.push(Row::new(l.pick(["已写入", "已寫入", "Written to"])).trail(Trail::Value(target)));
+            }
+            rows.push(Row::new(l.pick(["目标分区", "目標分割區", "Target partition"])).trail(Trail::Value(&st.target)));
+            if let Some(slot) = &st.slot {
+                rows.push(Row::new(l.pick(["当前槽位", "目前槽位", "Current slot"])).trail(Trail::Value(slot)));
+            }
+        }
+        None => rows.push(Row::new(l.pick(["读取失败", "讀取失敗", "Couldn't read"])).trail(Trail::None)),
+    }
+    let list = widgets::list(&mut c, t, f, y, &rows);
+    y = list.bottom + t.m.card_gap;
+    let note = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        y,
+        l.pick([
+            "Magisk 会修改当前槽的 boot 镜像。先做备份；只写入当前槽。",
+            "Magisk 會修改目前槽的 boot 鏡像。先做備份；只寫入目前槽。",
+            "Magisk patches the current slot's boot image. The stock image is backed up first; only the current slot is written.",
+        ]),
+    );
+    y = note + t.m.card_gap;
+    let online = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        y,
+        l.pick([
+            "从 GitHub 下载最新的 Magisk APK，补丁器就在里面；需要网络。",
+            "從 GitHub 下載最新的 Magisk APK，補丁器就在裡面；需要網路。",
+            "The newest Magisk APK is downloaded from GitHub, with its boot patcher inside; it needs the network.",
+        ]),
+    );
+    y = online + t.m.card_gap;
+    let idle = tr!(l, "滑动以写入 Magisk", "滑動以寫入 Magisk", "Slide to write Magisk");
+    let (progress, write_label) = write_state(s.magisk_job.as_ref(), s.root_bytes, l, &idle);
+    let track = widgets::confirm(&mut c, t, f, y, &write_label, false, progress);
+    out.push(Hit { rect: track, action: Action::Confirm(Confirm::Magisk) });
+    y = track.y + track.h + t.m.card_gap;
+    let bottom = if st.is_some_and(|st| st.has_backup) {
+        let target = st_target(st.map(|s| s.target.clone()));
+        let saved_label = format!("{} {target}", tr!(l, "恢复原厂", "恢復原廠", "Restore stock"));
+        let saved = widgets::section(&mut c, t, f, y, &saved_label);
+        let row = Row::new(l.pick(["已恢复", "已恢復", "Restored"])).icon(SLATE, Icon::Restore);
+        let saved = widgets::list(&mut c, t, f, saved, &[row]);
+        out.extend(hits(&saved.rows, &[Action::RestoreMagisk]));
+        saved.bottom
+    } else {
+        widgets::footnote(
+            &mut c,
+            t,
+            f,
+            y,
+            l.pick([
+                "没有 Magisk 的原厂 boot 备份可恢复：本恢复模式还没在这里写过 Magisk。",
+                "沒有 Magisk 的原廠 boot 備份可還原：本復原模式還沒在這裡寫過 Magisk。",
+                "There is no stock boot backup to restore: this recovery has not written Magisk here.",
+            ]),
+        )
+    };
+    Frame::new(t, c.crop_height(fitted(t, bottom)), out, l.pick(["Magisk", "Magisk", "Magisk"]), t.m.content_top)
+}
+
+/// 版本串只留第一段：`3.3.1-56-gcfc60f8d (uapi: 6) (32736)` 后面那截是
+/// 内核接口与编号，右栏放不下，会把左边的名字挤成「K...」。
+fn short_version(text: &str) -> String {
+    clip_saying(text.split_whitespace().next().unwrap_or(text))
+}
+
+/// What the KernelSU row of the root page says beside its name.
+fn kernel_su_saying(s: &State) -> String {
+    match s.kernel_su.as_ref() {
+        Some(Ok(st)) => st.version.as_deref().map(short_version).unwrap_or_else(|| s.lang.pick(["未安装", "未安裝", "Not installed"]).to_owned()),
+        Some(Err(why)) => clip_saying(why),
+        None => s.lang.pick(["读取失败", "讀取失敗", "Couldn't read"]).to_owned(),
+    }
+}
+
+/// 一行说法最多这么长，理由太长就截断，别把右侧那一栏撑满。
+fn clip_saying(why: &str) -> String {
+    let line = why.lines().next().unwrap_or(why).trim();
+    let mut out: String = line.chars().take(28).collect();
+    if out.chars().count() < line.chars().count() {
+        out.push('…');
+    }
+    out
+}
+
+/// What the Magisk row of the root page says beside its name.
+fn magisk_saying(s: &State) -> String {
+    match s.magisk.as_ref() {
+        Some(Ok(st)) => st.version.as_deref().map(short_version).unwrap_or_else(|| s.lang.pick(["未安装", "未安裝", "Not installed"]).to_owned()),
+        Some(Err(why)) => clip_saying(why),
+        None => s.lang.pick(["读取失败", "讀取失敗", "Couldn't read"]).to_owned(),
+    }
+}
+
+/// The partition a backup belongs to, as the restore row's title names it.
+fn st_target(target: Option<String>) -> String {
+    match target {
+        Some(t) => t,
+        None => "\u{2014}".to_owned(),
+    }
+}
+
 pub fn advanced(cx: &Ctx) -> Frame {
     let (t, f, l) = (cx.t, cx.f, cx.state.lang);
     // 长页：条目多了以后一屏放不下，整页跟着手指滚。
@@ -3467,6 +3856,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Row::new(l.pick(SERVE)).icon(BLUE, Icon::Globe),
         Row::new(l.pick(FETCH)).icon(GREEN, Icon::Globe),
         Row::new(l.pick(AVB)).icon(RED, Icon::Shield),
+        Row::new(l.pick(["Root 管理", "Root 管理", "Root"])).icon(PURPLE, Icon::Shield),
         Row::new(l.pick(UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(update_value(cx))),
         Row::new(l.pick(LOGS)).icon(ORANGE, Icon::Log),
         Row::new(l.pick(["U 盘管理", "USB 隨身碟管理", "USB drive"])).icon(PURPLE, Icon::UsbDrive),
@@ -3485,6 +3875,7 @@ pub fn advanced(cx: &Ctx) -> Frame {
         Action::Open(Screen::Serve),
         Action::Open(Screen::Fetch),
         Action::Open(Screen::Avb),
+        Action::Open(Screen::Root),
         Action::Open(Screen::Update),
         Action::Open(Screen::Logs),
         Action::FilesOtg,

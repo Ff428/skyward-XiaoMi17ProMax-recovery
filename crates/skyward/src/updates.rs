@@ -273,7 +273,7 @@ fn sample(agent: &ureq::Agent, url: &str) -> usize {
 
 /// The addresses, the one measured fastest first, all measured at once: a
 /// mirror that never answers must not hold up the ones that do.
-fn by_speed(servers: &Servers, urls: Vec<String>) -> Vec<String> {
+pub(crate) fn by_speed(servers: &Servers, urls: Vec<String>) -> Vec<String> {
     if urls.len() < 2 {
         return urls;
     }

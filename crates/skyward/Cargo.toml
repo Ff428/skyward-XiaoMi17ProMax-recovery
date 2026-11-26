@@ -21,6 +21,10 @@ skyward-info = { path = "../skyward-info" }
 skyward-install = { path = "../skyward-install" }
 skyward-sys = { path = "../skyward-sys" }
 skyward-lp = { path = "../skyward-lp" }
+# 写 Root：KMI 表与「按内核挑模块」（纯数据，零依赖）。
+skyward-root = { path = "../skyward-root" }
+serde_json = "1.0.154"
+sha2 = "0.10.9"
 
 [dev-dependencies]
 tempfile = "3.27.0"

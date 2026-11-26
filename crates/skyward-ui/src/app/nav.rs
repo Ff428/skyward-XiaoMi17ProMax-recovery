@@ -318,6 +318,22 @@ impl App {
             // 分区管理页上那一段「分区」列的就是挂载表，和挂载页同源。它原来
             // 没在这里要一次，开机后直接进来就是「没有读到分区」，非得先去一趟
             // 挂载页把那表读出来才看得见（2026-11-21 真机）。
+            // Root 页：进来读一次两个 Root 的现状，再问一次在线最新版本号。
+            Screen::Root => vec![Effect::ReadKernelSu, Effect::ReadMagisk, Effect::ReadRootLatest],
+            Screen::KernelSu => {
+                if self.state.kernel_su.is_none() {
+                    vec![Effect::ReadKernelSu]
+                } else {
+                    Vec::new()
+                }
+            }
+            Screen::Magisk => {
+                if self.state.magisk.is_none() {
+                    vec![Effect::ReadMagisk]
+                } else {
+                    Vec::new()
+                }
+            }
             Screen::Mount => vec![Effect::ReadMounts],
             // 分区页列的是 `by-name`，跟挂载表不是一回事了：只读这一张。
             Screen::Partitions => {

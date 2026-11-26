@@ -113,7 +113,8 @@ impl App {
                     if done {
                         return self.confirmed(which, now);
                     }
-                    return Vec::new();
+                    // 滑回左端：正在写的 Root 就此收手。
+                    return self.unconfirmed(which, now);
                 }
                 _ => {}
             }
@@ -570,6 +571,8 @@ impl App {
                     self.repaint_confirm(&t, f, which, track);
                     if done {
                         fx.extend(self.confirmed(which, now));
+                    } else {
+                        fx.extend(self.unconfirmed(which, now));
                     }
                 }
                 Drag::Pattern => fx.extend(self.drawn(now)),

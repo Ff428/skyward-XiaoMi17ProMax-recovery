@@ -2,10 +2,140 @@
 
 镜像名固定：`skyward-OS4.0.8.0-XiaoMi17ProMax.img`（品牌版，首页与关于页写「卑鄙坑Baby」）
 与 `skyward-OS4.0.8.0-XiaoMi17ProMax-official.img`（官方版，写 Skyward），两版只差品牌字，
-其余字节一致。文件名里的 `4.0.8.0` 是交付代号，底座是官方 `OS4.0.6.0.XPBCNXM`。
+其余字节一致。文件名里的 `4.0.8.0` 是交付代号，底座是官方 `OS4.0.8.0.XPBCNXM`。
 
 出包见 [BUILD.md](BUILD.md)，用法见 [使用.md](使用.md)，环境与坑见 [../AGENTS.md](../AGENTS.md)。
 CI 发布的 `<tag>-release-notes.md` 就是这份文件。
+
+---
+
+# 未发布 · Root 管理（移植自 skyward-pudding v0.5.9）
+
+把 mariusarva/skyward-pudding v0.5.9 的 Root 管理搬到本仓库。两边的树同源
+（都从 kirklin/skyward v0.5.0 分出来），所以是「新增一个 crate + 两个页面 + 接线」，
+没有打上游补丁——我们的 WLAN、三语言、模块安装、AVB 都是自己的，直接 `patch` 会冲突。
+
+## 入口与页面
+
+- 高级页在「AVB 校验」下面多一行「Root 管理」；控制中心的磁贴候选里也多一枚
+  `Root`（`TILES` 从 29 枚到 30 枚，默认摆法不变，它在「添加磁贴」里等着）。
+- `Screen::Root`：KernelSU、Magisk、模块管理三行看现状；下面「在线安装」两张卡
+  本身就是写入动作（滑动确认）。
+- `Screen::KernelSu`：状态、在线最新（可升级 / 已是最新）、当前槽位、开机锁、
+  版本、KMI 列表（默认按内核版本选中）、写入卡、恢复原厂。
+- `Screen::KernelSuKmi`：只列 KMI，点一行就是选它，返回上一页。
+- `Screen::Magisk`：状态、在线最新、目标分区（`init_boot` 还是 `boot`）、写入卡、
+  恢复原厂。
+
+## 素材全部在线取
+
+`crates/skyward-root`（新增，零依赖）只有 KMI 表和取舍逻辑：
+
+| KMI | Android | 内核 | 默认分区 |
+|---|---|---|---|
+| `android12-5.10` | 12 | 5.10 | `boot` |
+| `android13-5.10` | 13 | 5.10 | `boot` |
+| `android13-5.15` | 13 | 5.15 | `init_boot` |
+| `android14-5.15` | 14 | 5.15 | `init_boot` |
+| `android14-6.1` | 14 | 6.1 | `init_boot` |
+| `android15-6.6` | 15 | 6.6 | `init_boot` |
+| `android16-6.12` | 16 | 6.12 | `init_boot` |
+| `android17-6.18` | 17 | 6.18 | `init_boot` |
+
+写 Root 时才从 GitHub 取：`ksud-aarch64-linux-android`、`lkm-aarch64-<KMI>_kernelsu.ko`、
+`KernelSU_*-release.apk`；Magisk 取 `Magisk-*.apk`（补丁器就在里面）。所以
+ramdisk 体积不变——上游算过，8 个 KMI + ksud + 两个 APK 共 32.4 MiB，内置会把
+ramdisk 从 53.7 顶到 81.1 MiB。
+
+下载复用「在线更新本体」那一套：直连 + 8 个镜像前缀，`updates::by_speed` 并行测速后
+按快慢依次试（为此把 `by_speed` 从私有改成 `pub(crate)`，`skyward-net::github::mirrors()`
+新开出来）。每份文件 300 秒上限，整件事 420 秒上限（`root::Worker` 的 `DEADLINE`），
+每 2 秒往内核日志写一条 `root: <name> N/M KiB`，日志里能看出走的是直连还是哪家镜像。
+
+## 只升不降
+
+`version_parts` 把 `v3.3.2`、`3.3.1-56-gcfc60f8d`、`27.0` 都拆成三段数字比较。
+进页问一次 GitHub 最新版本，界面上写「可升级 / 已是最新」。两道闸：
+
+1. 滑动确认时 `root_would_downgrade()` 拦一次，不新就只说一句「已是最新，不降级」；
+2. 后端 `install_latest` 拿到 `tag_name` 后再比一次，不新就 `bail!`，一个字节都不写。
+
+## 备份与写入
+
+- 写入前先把原厂 boot 整份复制到 `/data/media/0/Skyward/root`，文件名叫
+  `<stem>-<槽>-<target>-<时间戳>.img`；分区里已经带着 KernelSU/Magisk 的痕迹时，
+  复用记录里那份**确认还是原厂**的备份（`stock=1` 且 sha256 对得上），不重复复制。
+- KernelSU：把 `ksud` 与 `.ko` 写到 `/tmp/skyward-kernelsu`，跑
+  `ksud boot-patch -b <分区> -m <ko> -o <目录> --out-name patched.img --kmi <KMI>`，
+  检查产物是 boot 镜像、不超过分区大小，再 `image::flash` 写进当前槽。
+- Magisk：从 APK 里解出 `magiskboot`、`magisk`、`magiskinit`、`init-ld`、
+  `boot_patch.sh`、`util_functions.sh`，跑 `boot_patch.sh <分区>` 出 `new-boot.img`，
+  同样检查后写入。
+- 两边的管理器 APK 都落在内部存储 `Download/Skyward/KernelSU.apk` 或 `Magisk.apk`，
+  **不调 `pm install`**，不会往桌面装 App。
+- 记录写到 `Skyward/root/kernelsu.conf` / `magisk.conf`：`version`、`kmi`、
+  `target`、`slot`、`backup`、`manager`、`sha256`、`stock`、`written`。
+  「恢复原厂」就是读这份记录、核对 sha256、把备份 flash 回同一个分区，再记 `restored=1`。
+- 分区选择 `target_partition`：先按 KMI 说的那个（`boot` / `init_boot`），
+  再看这一版手机到底把 ramdisk 放在哪（`has_ramdisk` 读 boot 头），两处不一致时听手机的。
+
+## 进度与取消
+
+`root::Worker::bytes()` 给「已下 / 总共」，「写入」卡上写 `42% · 1.2 MiB/s`
+（`write_state` 组装，速率由 `kernelsu_told` 每 0.5 秒算一次）。手指把卡滑回左端
+（`unconfirmed`）就发 `Effect::CancelRoot`，`Worker::stop()` 置位，下载循环下一次读
+就 `bail!("已取消")`；已经写出去的分区不回滚。失败时卡回到原位并写「写入未完成，
+可以再滑一次」。
+
+## 顺带补的三处底层
+
+- `skyward_install::image::open()`：读 sparse 布局 + 展开成流 + `detect`，返回
+  `Image { kind, layout }`。
+- `skyward_install::image::ramdisk_holds()`：判 boot 镜像的 ramdisk 里有没有某个条目
+  （KernelSU 看 `kernelsu.ko`，Magisk 看 `.backup/.magisk` 与 `overlay.d/sbin/magisk.xz`）。
+- `skyward_net::github::mirrors()`：把原来私有的 8 个镜像前缀给别的下载路径共用。
+
+## 没搬的部分
+
+上游 v0.5.9 还有「刷机后自动修补新槽」（`AutoRoot` / `SetAutoRoot`，安装系统后、
+重启前用已安装的 Root 修补新槽的 boot 镜像），它挂在安装流程里，与本次 Root 页面
+不是一件事；本次只做用户列出的那一组（入口、两页、在线素材、备份、只升不降、
+进度与取消）。上游另外合并的 Kinaxie 六项修复（服务复用、optional 服务、KeyMint
+现场、解锁状态多处读、keep 双槽、快照合并门禁）本仓库此前已各自实现，这里未重复搬。
+
+## 验证
+
+- `cargo check --target aarch64-linux-android -p skyward --bin skyward`：通过。
+- `cargo test -p skyward-root`：4 个测试全过（KMI 唯一、按内核与 Android 版本挑、
+  分区跟着内核走、版本串解析）。
+- `local_build.py --deliver`：八步全跑，`ALL CHECKS PASSED`，AVB 自洽。
+
+### 真机（小米 17 Pro Max / popsicle，recovery_a）
+
+出包 `sha256 8dd4d134…`，`dd` 写入后回读 md5 一致，重启 12 秒回 recovery。
+
+| 项 | 结果 |
+|---|---|
+| 高级页「Root 管理」入口 | 在「AVB 校验」下一行，点进得去 |
+| 控制中心磁贴候选 | 末行 `AVB / 无线传输 / 分区镜像 / Root`，30 枚齐 |
+| Root 页 | KernelSU、Magisk、模块管理三行 + 两张在线写入卡 |
+| KernelSU 页 | 已安装 `3.3.1-56-gcfc60f8d`、在线最新 `v3.3.1 · 已是最新`、槽位 A、已解锁 |
+| KMI 列表 | 8 项齐，默认勾 `android16-6.12`（popsicle 内核 6.12，Android 17 回退到同内核最新一版） |
+| Magisk 页 | 未安装、在线最新 `v31.1`、目标分区 `init_boot`、槽位 A |
+| 只升不降 | 滑满卡 → toast「已是最新，不降级」，`dmesg` 无 `fetching`，`Skyward/root/` 未创建 |
+| 互斥 | 装 Magisk 时 8 ms 内 `Failed("KernelSU is installed; restore its boot image before installing Magisk")` |
+| 在线版本查询 | 开机 21 s 一次、进 Root 页再一次：`Some("v3.3.1") and Some("v31.1")` |
+
+真机暴露并修掉两处：
+
+1. Root 页第一行被版本串 `3.3.1-56-gcfc60f8d (uapi: 6) (32736)` 挤成 `K...`；
+   `short_version` 只留第一段。
+2. 没有 `kernelsu.conf` 时仍摆一行「已恢复」，点了必然失败（日志
+   `no KernelSU backup record`）。`has_backup` 为假时改成一句说明，不给可点的行。
+
+未验证（前置状态不满足）：真实下载进度与速率、滑回取消、备份/patch/写分区、
+恢复原厂。这台机器的 KernelSU 由 KSU 管理器装入，没有本恢复模式的 `kernelsu.conf`；
+要跑通整条写入链，需先有一台没有 Root 的机器，或手动把 `init_boot` 恢复原厂。
 
 ---
 

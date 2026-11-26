@@ -626,6 +626,23 @@ pub struct State {
     pub skyward_job: Option<SkywardJob>,
     /// How fast data went over the network joined in the last second.
     pub traffic: Traffic,
+    /// KernelSU 的现状：打开页时读一次，读不到时是为什么。
+    pub kernel_su: Option<Result<KernelSuStatus, String>>,
+    /// 页上选中的 KMI，按它在列表里的位置。
+    pub kernel_su_kmi: Option<usize>,
+    /// 写入 KernelSU 走到哪一步、结果如何。
+    pub kernel_su_job: Option<KernelSuJob>,
+    /// 本地选的内核模块（.ko）路径，没有就用 KMI 自带的。
+    pub kernel_su_ko: Option<String>,
+    /// Magisk 的现状。
+    pub magisk: Option<Result<MagiskStatus, String>>,
+    /// 写入 Magisk 走到哪一步、结果如何。
+    pub magisk_job: Option<KernelSuJob>,
+    /// 正在下的这一份：已下字节、总字节（不知道时 None）、每秒字节。
+    pub root_bytes: Option<(u64, Option<u64>, u64)>,
+    /// 在线最新的 KernelSU 与 Magisk 版本号。
+    pub latest_kernelsu: Option<String>,
+    pub latest_magisk: Option<String>,
 }
 
 impl Default for State {
@@ -791,6 +808,15 @@ impl Default for State {
             skyward_check: SkywardCheck::Idle,
             skyward_job: None,
             traffic: Traffic::default(),
+            kernel_su: None,
+            kernel_su_kmi: None,
+            kernel_su_job: None,
+            kernel_su_ko: None,
+            magisk: None,
+            magisk_job: None,
+            root_bytes: None,
+            latest_kernelsu: None,
+            latest_magisk: None,
         }
     }
 }

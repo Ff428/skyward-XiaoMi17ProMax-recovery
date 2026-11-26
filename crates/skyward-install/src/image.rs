@@ -251,6 +251,23 @@ impl<R: Read + Seek> Seek for Expanded<'_, R> {
     }
 }
 
+/// An image file: what it holds, and how it lays that out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Image {
+    pub kind: ImageKind,
+    pub layout: Layout,
+}
+
+/// What the file `file` of `len` bytes is as an image.
+pub fn open<R: Read + Seek>(file: &mut R, len: u64) -> Result<Image> {
+    let layout = Layout::read(file, len)?;
+    let mut image = Expanded::new(file, &layout);
+    let mut head = Vec::with_capacity(4096);
+    (&mut image).take(4096).read_to_end(&mut head).context("read the image's first bytes")?;
+    let kind = detect(&mut image, &head)?.context("the image is not one this recovery writes")?;
+    Ok(Image { kind, layout })
+}
+
 /// The image `file` holds, from `head`, its first bytes, and for a boot
 /// image its ramdisk; `None` when it is no image this recovery writes.
 pub fn detect<R: Read + Seek>(file: &mut R, head: &[u8]) -> Result<Option<ImageKind>> {
@@ -351,6 +368,33 @@ pub fn device_config<R: Read + Seek>(file: &mut R) -> Result<Option<Vec<u8>>> {
         Ok(config)
     };
     find(ramdisk, |name| name == skyward_config::ramdisk::CONFIG, read).context("read the ramdisk")
+}
+
+/// Whether the boot image's ramdisk has an entry whose name `wanted` picks.
+pub fn ramdisk_holds<R: Read + Seek>(file: &mut R, wanted: impl Fn(&str) -> bool) -> Result<bool> {
+    Ok(in_ramdisk(file, wanted, |_| Ok(()))?.is_some())
+}
+
+/// What `take` makes of the first entry of the boot image's ramdisk whose
+/// name `wanted` picks, read from its start; none when the image is no boot
+/// image, has no ramdisk, or no entry's name is picked.
+fn in_ramdisk<R: Read + Seek, T>(file: &mut R, wanted: impl Fn(&str) -> bool, take: impl FnOnce(&mut dyn Read) -> Result<T>) -> Result<Option<T>> {
+    let mut head = Vec::with_capacity(4096);
+    file.take(4096).read_to_end(&mut head).context("read the image's first bytes")?;
+    if !head.starts_with(BOOT_MAGIC) {
+        return Ok(None);
+    }
+    let header = Header::parse(&mut Cursor::new(&head)).context("read the boot image header")?;
+    if header.ramdisk_size() == 0 {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(header.ramdisk_position() as u64)).context("seek to the ramdisk")?;
+    let mut ramdisk = BufReader::new(file.take(u64::from(header.ramdisk_size())));
+    let start = ramdisk.fill_buf().context("read the ramdisk's first bytes")?;
+    if ![LZ4_LEGACY, LZ4_FRAME, GZIP, NEWC].iter().any(|magic| start.starts_with(magic)) {
+        return Ok(None);
+    }
+    find(ramdisk, wanted, take)
 }
 
 /// The partition `name` of `slot` among the links in `dir`.

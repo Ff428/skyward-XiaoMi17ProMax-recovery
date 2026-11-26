@@ -24,13 +24,14 @@ members = [
     "crates/skyward-bootimg",
     "crates/skyward-systems",
     "crates/skyward-system-init",
+    "crates/skyward-root",
 ]
 
 [workspace.package]
 # 应用版本：关于页与开机那行内核日志里的 0.6.0 就是这里。并入布丁功能时是 0.5.5
 # （2026-11-24），本仓库从那以后自己走：2026-11-25 升到 0.6.0（开机提速、模块按
 # 模块装、无线断开重连、解密页那条进度条）。对外发布看 git tag，两者一起改。
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 

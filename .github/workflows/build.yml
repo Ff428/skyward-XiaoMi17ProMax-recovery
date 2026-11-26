@@ -231,7 +231,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           {
-            echo "小米 17 Pro Max（\`popsicle\`，底座 \`OS4.0.6.0.XPBCNXM\`）。同一棵树、同一份源码，两版只差品牌字。"
+            echo "小米 17 Pro Max（\`popsicle\`，底座 \`OS4.0.8.0.XPBCNXM\`）。同一棵树、同一份源码，两版只差品牌字。"
             echo
             echo "| 文件 | 是什么 |"
             echo "|---|---|"
@@ -240,13 +240,13 @@ jobs:
             echo
             echo "校验：\`sha256sum -c SHA256SUMS\`。刷入、校验、从源码重建见 README。"
             echo
-            echo "文件名里的 \`4.0.8.0\` 是交付代号，底座是 \`OS4.0.6.0.XPBCNXM\`（见 docs/CHANGELOG.md）。"
+            echo "文件名里的 \`4.0.8.0\` 是交付代号，底座是 \`OS4.0.8.0.XPBCNXM\`（见 docs/CHANGELOG.md）。"
           } > notes.md
           # 幂等：tag 移动、或同一 tag 重跑一次时，不要因为「release 已存在」就炸。
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" --clobber               "images/$NAME.img" "images/$NAME-official.img" "images/SHA256SUMS" "images/$GITHUB_REF_NAME-release-notes.md"
           else
-            gh release create "$GITHUB_REF_NAME"               --title "$GITHUB_REF_NAME — 小米 17 Pro Max (popsicle, OS4.0.6.0)"               --notes-file notes.md               "images/$NAME.img" "images/$NAME-official.img" "images/SHA256SUMS" "images/$GITHUB_REF_NAME-release-notes.md"
+            gh release create "$GITHUB_REF_NAME"               --title "$GITHUB_REF_NAME-小米 17 Pro Max（冰棒，OS4.0.8.0）"               --notes-file notes.md               "images/$NAME.img" "images/$NAME-official.img" "images/SHA256SUMS" "images/$GITHUB_REF_NAME-release-notes.md"
           fi
           # 清单里没有的资产删掉：`upload --clobber` 只覆盖同名，上一次留下的
           # zip 之类会一直挂在那儿（2026-11-24 页面上于是有四个「镜像」）。
@@ -261,7 +261,7 @@ jobs:
           # 只走 `upload --clobber` 的话只会换文件，标题与说明仍是上一次的
           # （2026-11-24 改了标题却没生效，就是这么来的）；`draft=True` 那次
           # 也是在这一步被强制拉回公开。
-          gh release edit "$GITHUB_REF_NAME" --draft=false --latest             --title "$GITHUB_REF_NAME — 小米 17 Pro Max (popsicle, OS4.0.6.0)"             --notes-file notes.md
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest             --title "$GITHUB_REF_NAME-小米 17 Pro Max（冰棒，OS4.0.8.0）"             --notes-file notes.md
 
   # 列表里只留这一次运行：本 workflow 更早的那些（被新推送取消的、重推标签留下的）
   # 跑完后自己删掉。不然 Actions 页面上是一串同名的记录，全是同一句提交说明。

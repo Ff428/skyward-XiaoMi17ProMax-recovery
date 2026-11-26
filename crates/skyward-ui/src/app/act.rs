@@ -1050,6 +1050,38 @@ impl App {
                 self.state.module_at = Some(k);
                 return self.act(Action::Open(Screen::ModuleInfo), now);
             }
+            // 选 KernelSU 列表里这个位置的 KMI：回到上一页，页上就写它。
+            Action::KernelSuKmi(at) => {
+                self.set_kernel_su_kmi(at);
+                return self.back(now);
+            }
+            // 用 KMI 自带的内核模块，不用本地选的。
+            Action::KernelSuModuleBuiltIn => {
+                self.state.kernel_su_ko = None;
+                self.refresh();
+            }
+            // 把备份的 KernelSU 原厂 boot 写回去。
+            Action::RestoreKernelSu => {
+                if self.state.data != Data::Open {
+                    self.say(l.pick(["内部存储未打开，请先解密 data。", "內部儲存未開啟，請先解密 data。", "Internal storage is not open; decrypt data first."]), now);
+                } else if self.state.kernel_su_job.as_ref().is_some_and(|j| j.outcome.is_none()) {
+                    self.say(l.pick(["正在写入 KernelSU，请等待完成。", "正在寫入 KernelSU，請等待完成。", "Writing KernelSU; wait for it to finish."]), now);
+                } else {
+                    self.kernel_su_started();
+                    return vec![Effect::RestoreKernelSu];
+                }
+            }
+            // 把备份的 Magisk 原厂 boot 写回去。
+            Action::RestoreMagisk => {
+                if self.state.data != Data::Open {
+                    self.say(l.pick(["内部存储未打开，请先解密 data。", "內部儲存未開啟，請先解密 data。", "Internal storage is not open; decrypt data first."]), now);
+                } else if self.state.magisk_job.as_ref().is_some_and(|j| j.outcome.is_none()) {
+                    self.say(l.pick(["正在写入 Magisk，请等待完成。", "正在寫入 Magisk，請等待完成。", "Writing Magisk; wait for it to finish."]), now);
+                } else {
+                    self.magisk_started();
+                    return vec![Effect::RestoreMagisk];
+                }
+            }
             // 标记删除（或取消标记）：KSU/Magisk 都是看模块目录里有没有
             // `remove` 文件，有就在下次启动时清掉。
             Action::ModuleRemove(k) => {
@@ -1527,6 +1559,28 @@ impl App {
     }
 
     /// What a swipe-to-confirm control slid to its end does.
+    /// 在线那一版不比装着的旧吗：旧就拦下，一个字节都不写。
+    fn root_would_downgrade(&self, magisk: bool) -> bool {
+        let (installed, online) = if magisk {
+            let installed = self.state.magisk.as_ref().and_then(|r| r.as_ref().ok()).and_then(|st| st.version.clone());
+            (installed, self.state.latest_magisk.clone())
+        } else {
+            let installed = self.state.kernel_su.as_ref().and_then(|r| r.as_ref().ok()).and_then(|st| st.version.clone());
+            (installed, self.state.latest_kernelsu.clone())
+        };
+        matches!(is_newer(installed.as_deref(), online.as_deref()), Some(false))
+    }
+
+    /// 手指把滑块从底滑回左端（没滑完）：对正在写的 Root 就是取消。
+    pub(super) fn unconfirmed(&mut self, which: Confirm, _now: u64) -> Vec<Effect> {
+        let running = |job: Option<&KernelSuJob>| job.is_some_and(|j| j.outcome.is_none());
+        match which {
+            Confirm::KernelSu if running(self.state.kernel_su_job.as_ref()) => vec![Effect::CancelRoot { magisk: false }],
+            Confirm::Magisk if running(self.state.magisk_job.as_ref()) => vec![Effect::CancelRoot { magisk: true }],
+            _ => Vec::new(),
+        }
+    }
+
     pub(super) fn confirmed(&mut self, which: Confirm, now: u64) -> Vec<Effect> {
         let (l, mut fx) = (self.state.lang, Vec::new());
         // Every slider taken across is answered with a click of the motor,
@@ -1539,6 +1593,41 @@ impl App {
             Confirm::Avb => {
                 if let Some((verity, verification)) = self.state.avb_pending.take() {
                     fx.push(Effect::AvbSet(verity, verification));
+                }
+            }
+            // 把 KMI 写进当前槽：先确认 data 已开、没在写、已解锁、在线的不比
+            // 装着的旧，才真的开始（只升不降，2026-11-26）。
+            Confirm::KernelSu => {
+                if self.state.data != Data::Open {
+                    self.say(l.pick(["内部存储未打开，请先解密 data。", "內部儲存未開啟，請先解密 data。", "Internal storage is not open; decrypt data first."]), now);
+                } else if self.state.kernel_su_job.as_ref().is_some_and(|j| j.outcome.is_none()) {
+                    self.say(l.pick(["正在写入 KernelSU，请等待完成。", "正在寫入 KernelSU，請等待完成。", "Writing KernelSU; wait for it to finish."]), now);
+                } else if self.state.kernel_su.as_ref().and_then(|r| r.as_ref().ok()).is_some_and(|st| !st.unlocked) {
+                    self.say(l.pick(["已锁定", "已鎖定", "Locked"]), now);
+                } else if self.root_would_downgrade(false) {
+                    self.say(l.pick(["已是最新，不降级", "已是最新，不降級", "Already the newest; not downgraded"]), now);
+                } else {
+                    let kmi = self.kernel_su_kmi().map(|row| row.id.clone()).unwrap_or_default();
+                    let module = self.state.kernel_su_ko.take();
+                    self.kernel_su_started();
+                    self.state.confirm = 1.0;
+                    fx.push(Effect::InstallKernelSu { kmi, module });
+                }
+            }
+            // 把 Magisk 写进当前槽：同一套前置检查。
+            Confirm::Magisk => {
+                if self.state.data != Data::Open {
+                    self.say(l.pick(["内部存储未打开，请先解密 data。", "內部儲存未開啟，請先解密 data。", "Internal storage is not open; decrypt data first."]), now);
+                } else if self.state.magisk_job.as_ref().is_some_and(|j| j.outcome.is_none()) {
+                    self.say(l.pick(["正在写入 Magisk，请等待完成。", "正在寫入 Magisk，請等待完成。", "Writing Magisk; wait for it to finish."]), now);
+                } else if self.state.magisk.as_ref().and_then(|r| r.as_ref().ok()).is_some_and(|st| !st.unlocked) {
+                    self.say(l.pick(["已锁定", "已鎖定", "Locked"]), now);
+                } else if self.root_would_downgrade(true) {
+                    self.say(l.pick(["已是最新，不降级", "已是最新，不降級", "Already the newest; not downgraded"]), now);
+                } else {
+                    self.magisk_started();
+                    self.state.confirm = 1.0;
+                    fx.push(Effect::InstallMagisk);
                 }
             }
             // 写回一份旧 vbmeta：没选中就什么都不做，选了就把路径交出去。

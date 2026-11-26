@@ -46,8 +46,10 @@ mod modules;
 pub mod dataapp;
 mod dataapp_list;
 mod install;
+mod kernel_su;
 mod keys;
 mod manager;
+mod magisk;
 mod mount;
 mod nav;
 mod partitions;
@@ -74,7 +76,9 @@ pub use entry::*;
 pub use filesystem::*;
 pub use frame::*;
 pub use install::*;
+pub use kernel_su::*;
 pub use manager::*;
+pub use magisk::*;
 pub use mount::*;
 pub use partitions::*;
 pub use prefs::*;
@@ -183,6 +187,14 @@ pub enum Screen {
     /// Verified boot's two checks in the slot the phone runs from, turned on
     /// or off with a swipe.
     Avb,
+    /// Root 自己的页：装了哪个、模块，以及两张在线写入卡。
+    Root,
+    /// KernelSU 的素材、要写的 KMI，以及写进当前槽的 boot 镜像。
+    KernelSu,
+    /// KernelSU 页要写的那个 KMI。
+    KernelSuKmi,
+    /// Magisk 的启动补丁器，以及写进当前槽的 boot 镜像。
+    Magisk,
     /// Skyward's newest release, and updating to it: its build for the
     /// phone downloaded and written into the recovery partitions.
     SkywardUpdate,
@@ -277,6 +289,10 @@ pub enum Confirm {
     KeepLock,
     /// Write the verified boot checks the avb page has turned.
     Avb,
+    /// 把 KMI 写进当前槽的 boot 镜像。
+    KernelSu,
+    /// 把 Magisk 写进当前槽的 boot 镜像。
+    Magisk,
     /// Install the update that waits to be agreed to.
     Install,
     /// Install an update that erases all user data after it.
@@ -449,6 +465,14 @@ pub enum Action {
     InstallAsModule,
     /// Open the module at this place in the list.
     ModuleOpen(usize),
+    /// 选 KernelSU 列表里这个位置的 KMI 来写。
+    KernelSuKmi(usize),
+    /// 用 KMI 自带的内核模块，不用本地选的。
+    KernelSuModuleBuiltIn,
+    /// 把备份的 KernelSU 原厂 boot 写回去。
+    RestoreKernelSu,
+    /// 把备份的 Magisk 原厂 boot 写回去。
+    RestoreMagisk,
     /// 模块管理翻一屏：负数往回。
     ModulePage(i32),
     /// 只读的系统应用页翻一屏。
@@ -671,6 +695,24 @@ pub enum Effect {
     /// Have the module in this folder removed at the next start, or keep it:
     /// the folder's name, and whether it is to go.
     ModuleRemove(String, bool),
+    /// 读 KernelSU 与手机的现状，用 [`App::set_kernel_su`] 告知。
+    ReadKernelSu,
+    /// 把 KMI 写进当前槽的 boot 镜像，用 [`App::kernel_su_started`]、
+    /// [`App::kernel_su_progress`]、[`App::kernel_su_ended`] 告知过程。
+    InstallKernelSu { kmi: String, module: Option<String> },
+    /// 把 KernelSU 换掉的 boot 镜像写回去，过程同安装。
+    RestoreKernelSu,
+    /// 读 Magisk 与手机的现状，用 [`App::set_magisk`] 告知。
+    ReadMagisk,
+    /// 把 Magisk 写进当前槽的 boot 镜像，用 [`App::magisk_started`]、
+    /// [`App::magisk_progress`]、[`App::magisk_ended`] 告知过程。
+    InstallMagisk,
+    /// 把 Magisk 换掉的 boot 镜像写回去，过程同安装。
+    RestoreMagisk,
+    /// 手指把卡滑回去：正在下的这一份停下，已写出去的不管。
+    CancelRoot { magisk: bool },
+    /// 问一下 GitHub 上 KernelSU 与 Magisk 的最新版本号。
+    ReadRootLatest,
     /// Install, or install over, the module the zip at this path carries.
     ModuleInstall(String),
     /// Read the apps installed in the data partition.

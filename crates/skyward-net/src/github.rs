@@ -58,6 +58,11 @@ const MIRRORS: [&str; 8] = [
     "https://cdn.crashmc.com/",
 ];
 
+/// 能替 github.com 取文件的镜像前缀，供别的下载路径共用。
+pub fn mirrors() -> &'static [&'static str] {
+    &MIRRORS
+}
+
 impl Build {
     /// Where to download the zip from, in the order to try: the file's own
     /// short-lived address, where GitHub's API gave one, then the release's

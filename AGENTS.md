@@ -1,6 +1,6 @@
 # 给接手的人
 
-小米 17 Pro Max（代号 `popsicle`，系统 `OS4.0.6.0.XPBCNXM`）的第三方 recovery，Rust 写的。
+小米 17 Pro Max（代号 `popsicle`，系统 `OS4.0.8.0.XPBCNXM`）的第三方 recovery，Rust 写的。
 上游 [kirklin/skyward](https://github.com/kirklin/skyward)，功能补丁来自
 [mariusarva/skyward-pudding](https://github.com/mariusarva/skyward-pudding)。
 

@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn the_stock_build_is_named_as_the_phone_maker_names_it() {
         let text = include_str!("../../../devices/popsicle.toml");
-        let version = "OS4.0.6.0.XPBCNXM";
+        let version = "OS4.0.8.0.XPBCNXM";
         let stock = DeviceConfig::parse(text).unwrap().stock.expect("a stock build to build on");
         assert_eq!(stock.version, version);
         assert!(stock.package.ends_with(".zip") && stock.package.contains(&format!("/{version}/")), "{}", stock.package);

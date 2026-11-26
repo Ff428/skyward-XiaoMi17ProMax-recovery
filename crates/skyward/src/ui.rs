@@ -4,6 +4,7 @@ use crate::decrypt::{self, Decryptor};
 use crate::filework;
 use crate::haptics::Haptics;
 use crate::relabel;
+use crate::root;
 use crate::input::{monotonic_ms, Event, Inputs};
 use crate::merge;
 use crate::partwork;
@@ -1688,6 +1689,14 @@ struct Pages<'a> {
     /// Asking GitHub for Skyward's newest release, and updating to it.
     skyward_checker: Option<updates::Worker>,
     skyward_updater: Option<updates::Worker>,
+    /// 写 KernelSU 与 Magisk：两条线各一个，下载与写入都在里面。
+    root_worker: Option<root::Worker>,
+    magisk_worker: Option<root::Worker>,
+    /// 问在线最新版本号的那条线，问完就收。
+    root_versions: Option<root::Versions>,
+    /// 速度用：上一次的字节数与时刻。
+    kernelsu_seen: Option<(u64, Instant)>,
+    kernelsu_rate: u64,
     /// The terminal page's shell, from when the page first asks for one.
     shell: Option<pty::Shell>,
     /// The USB drive plugged in, looked for each second.
@@ -2013,6 +2022,11 @@ impl<'a> Pages<'a> {
             downloader: None,
             skyward_checker: None,
             skyward_updater: None,
+            root_worker: None,
+            magisk_worker: None,
+            root_versions: None,
+            kernelsu_seen: None,
+            kernelsu_rate: 0,
             shell: None,
             plugged: None,
             seen: None,
@@ -2306,6 +2320,9 @@ impl<'a> Pages<'a> {
         self.backup_told(now);
         self.merge_told(now)?;
         self.root_told()?;
+        self.kernelsu_told(now)?;
+        self.magisk_told(now)?;
+        self.versions_told();
         self.systems_told(now)?;
         self.wlan_told()?;
         self.keep_settings(now)?;
@@ -2687,6 +2704,15 @@ impl<'a> Pages<'a> {
         if let Some(u) = &self.skyward_updater {
             fds.push(u.fd());
         }
+        if let Some(w) = &self.root_worker {
+            fds.push(w.fd());
+        }
+        if let Some(w) = &self.magisk_worker {
+            fds.push(w.fd());
+        }
+        if let Some(v) = &self.root_versions {
+            fds.push(v.fd());
+        }
         if let Some(s) = &self.systems_worker {
             fds.push(s.fd());
         }
@@ -2952,6 +2978,97 @@ impl<'a> Pages<'a> {
     /// What putting the root back told since the last turn, and its end: the
     /// page follows each step, and says the install is done once the image
     /// the slot starts from holds the root the phone has (2026-11-21).
+    /// 在线版本号问回来了：页面上写出来，下一次进来不必再问。
+    fn versions_told(&mut self) {
+        let told = self.root_versions.as_ref().map(root::Versions::events).unwrap_or_default();
+        for ev in told {
+            let root::VersionEvent::Done(kernelsu, magisk) = ev;
+            self.app.set_latest_root(kernelsu, magisk);
+            self.root_versions = None;
+        }
+    }
+
+    /// 写 KernelSU 那条线说了什么：走到哪一步、下到多少、结束如何。
+    fn kernelsu_told(&mut self, now: u64) -> Result<()> {
+        if let Some(worker) = &self.root_worker {
+            let (done, total) = worker.bytes();
+            let at = Instant::now();
+            match self.kernelsu_seen {
+                Some((last, then)) if at.duration_since(then).as_secs_f64() >= 0.5 => {
+                    let seconds = at.duration_since(then).as_secs_f64();
+                    self.kernelsu_rate = (done.saturating_sub(last) as f64 / seconds) as u64;
+                    self.kernelsu_seen = Some((done, at));
+                }
+                Some(_) => {}
+                None => self.kernelsu_seen = Some((done, at)),
+            }
+            self.app.set_root_bytes(done, total, self.kernelsu_rate);
+        }
+        let told = self.root_worker.as_ref().map(root::Worker::events).unwrap_or_default();
+        let mut ended = false;
+        for ev in told {
+            match ev {
+                root::Event::Stage(stage) => self.app.kernel_su_progress(stage),
+                root::Event::Fetched(version) => self.app.kernel_su_fetched(version, now),
+                root::Event::Fallback(why) => self.app.kernel_su_fallback(why, now),
+                root::Event::Ended(end) => {
+                    skyward_sys::kmsg(&format!("writing KernelSU ended: {end:?}"))?;
+                    self.app.kernel_su_ended(end, now);
+                    ended = true;
+                }
+            }
+        }
+        if ended {
+            self.root_worker = None;
+            self.kernelsu_seen = None;
+            self.kernelsu_rate = 0;
+            self.app.clear_root_bytes();
+            self.app.state.confirm = 0.0;
+            self.app.set_kernel_su(root::status(&self.info));
+        }
+        Ok(())
+    }
+
+    /// 写 Magisk 那条线说了什么。
+    fn magisk_told(&mut self, now: u64) -> Result<()> {
+        if let Some(worker) = &self.magisk_worker {
+            let (done, total) = worker.bytes();
+            let at = Instant::now();
+            match self.kernelsu_seen {
+                Some((last, then)) if at.duration_since(then).as_secs_f64() >= 0.5 => {
+                    let seconds = at.duration_since(then).as_secs_f64();
+                    self.kernelsu_rate = (done.saturating_sub(last) as f64 / seconds) as u64;
+                    self.kernelsu_seen = Some((done, at));
+                }
+                Some(_) => {}
+                None => self.kernelsu_seen = Some((done, at)),
+            }
+            self.app.set_root_bytes(done, total, self.kernelsu_rate);
+        }
+        let told = self.magisk_worker.as_ref().map(root::Worker::events).unwrap_or_default();
+        let mut ended = false;
+        for ev in told {
+            match ev {
+                root::Event::Stage(stage) => self.app.magisk_progress(stage),
+                root::Event::Fetched(_) | root::Event::Fallback(_) => {}
+                root::Event::Ended(end) => {
+                    skyward_sys::kmsg(&format!("writing Magisk ended: {end:?}"))?;
+                    self.app.magisk_ended(end, now);
+                    ended = true;
+                }
+            }
+        }
+        if ended {
+            self.magisk_worker = None;
+            self.kernelsu_seen = None;
+            self.kernelsu_rate = 0;
+            self.app.clear_root_bytes();
+            self.app.state.confirm = 0.0;
+            self.app.set_magisk(root::magisk_status(&self.info));
+        }
+        Ok(())
+    }
+
     fn root_told(&mut self) -> Result<()> {
         let (events, ended, slot, wipe) = match &self.rooting {
             Some(rooting) => (rooting.worker.events(), rooting.worker.ended(), rooting.slot, rooting.wipe),
@@ -4904,6 +5021,51 @@ impl Pages<'_> {
                     skyward_sys::kmsg("the download is stopped, as the page asked")?;
                     worker.stop();
                 }
+            }
+            // 读 KernelSU / Magisk 的现状：打开页时读一次。
+            Effect::ReadKernelSu => self.app.set_kernel_su(root::status(&self.info)),
+            Effect::ReadMagisk => self.app.set_magisk(root::magisk_status(&self.info)),
+            // 问一次 GitHub 上两个的最新版本号。
+            Effect::ReadRootLatest => {
+                if self.root_versions.is_none() {
+                    self.root_versions = Some(root::Versions::start(self.servers.clone())?);
+                }
+            }
+            Effect::InstallKernelSu { kmi, module } => {
+                ensure!(self.root_worker.is_none(), "KernelSU is being written already");
+                ensure!(self.magisk_worker.is_none(), "Magisk is being written already");
+                skyward_sys::kmsg(&format!("fetching and writing the latest KernelSU {kmi} into the current slot"))?;
+                let servers = self.servers.clone();
+                self.root_worker = Some(root::Worker::start(root::Task::InstallKernelSu { kmi, slot: None, servers, module })?);
+            }
+            Effect::RestoreKernelSu => {
+                ensure!(self.root_worker.is_none(), "KernelSU is being written already");
+                ensure!(self.magisk_worker.is_none(), "Magisk is being written already");
+                skyward_sys::kmsg("restoring the stock boot image KernelSU replaced")?;
+                self.root_worker = Some(root::Worker::start(root::Task::RestoreKernelSu)?);
+            }
+            Effect::InstallMagisk => {
+                ensure!(self.magisk_worker.is_none(), "Magisk is being written already");
+                ensure!(self.root_worker.is_none(), "KernelSU is being written already");
+                skyward_sys::kmsg("writing Magisk into the current slot")?;
+                let servers = self.servers.clone();
+                self.magisk_worker = Some(root::Worker::start(root::Task::InstallMagisk { slot: None, servers })?);
+            }
+            Effect::RestoreMagisk => {
+                ensure!(self.magisk_worker.is_none(), "Magisk is being written already");
+                ensure!(self.root_worker.is_none(), "KernelSU is being written already");
+                skyward_sys::kmsg("restoring the stock boot image Magisk replaced")?;
+                self.magisk_worker = Some(root::Worker::start(root::Task::RestoreMagisk)?);
+            }
+            // 手指把卡滑回去：下载立刻停，已写出去的不回滚。
+            Effect::CancelRoot { magisk } => {
+                if let Some(w) = if magisk { self.magisk_worker.as_ref() } else { self.root_worker.as_ref() } {
+                    skyward_sys::kmsg(&format!("root: cancelled by the finger ({})", if magisk { "magisk" } else { "kernelsu" }))?;
+                    w.stop();
+                }
+                self.app.clear_root_bytes();
+                self.app.state.confirm = 0.0;
+                self.app.refresh();
             }
             // Verified boot's two checks in the slot the phone runs from, as
             // the avb page reads them and as it writes what was turned.

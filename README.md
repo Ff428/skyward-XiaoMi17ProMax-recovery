@@ -5,7 +5,7 @@
 | 项 | 值 |
 |---|---|
 | 机型 | Xiaomi 17 Pro Max（`popsicle`，双槽 A/B） |
-| 底座 | 官方 `OS4.0.6.0.XPBCNXM` 的 recovery 分区 |
+| 底座 | 官方 `OS4.0.8.0.XPBCNXM` 的 recovery 分区 |
 | 镜像 | `skyward-OS4.0.8.0-XiaoMi17ProMax.img` / `…-official.img`（只差品牌字） |
 | 许可 | GPL-3.0（上游 Skyward 的许可声明原样保留） |
 

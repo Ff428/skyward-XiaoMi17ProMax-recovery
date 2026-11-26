@@ -41,6 +41,8 @@ pub enum Tile {
     Serve,
     /// 分区镜像：导出、写回、删除。
     ImageBackup,
+    /// Root 管理：KernelSU / Magisk 与在线写入。
+    Root,
 }
 
 /// 没存过时摆的：v124 那十二枚，一行四个、三排。
@@ -60,7 +62,7 @@ pub const DEFAULT: [Tile; 12] = [
 ];
 
 /// 全部磁贴，按默认摆的顺序排：前十二个是 [`DEFAULT`]，后面是后加的。
-pub const TILES: [Tile; 29] = [
+pub const TILES: [Tile; 30] = [
     Tile::Wlan,
     Tile::Screenshot,
     Tile::Reboot,
@@ -90,6 +92,7 @@ pub const TILES: [Tile; 29] = [
     Tile::Avb,
     Tile::Serve,
     Tile::ImageBackup,
+    Tile::Root,
 ];
 
 impl Tile {
@@ -125,6 +128,7 @@ impl Tile {
             Tile::Avb => "avb",
             Tile::Serve => "serve",
             Tile::ImageBackup => "image-backup",
+            Tile::Root => "root",
         }
     }
 
@@ -163,6 +167,7 @@ impl Tile {
             Tile::Fetch => l.pick(["下载", "下載", "Download"]),
             Tile::ScreenOff => l.pick(["息屏", "螢幕逾時", "Screen off"]),
             Tile::Avb => l.pick(["AVB", "AVB", "AVB"]),
+            Tile::Root => l.pick(["Root", "Root", "Root"]),
             Tile::Serve => l.pick(["无线传输", "無線傳輸", "Wi-Fi share"]),
             Tile::ImageBackup => l.pick(["分区镜像", "分割區映像檔", "Images"]),
         }
@@ -203,6 +208,7 @@ impl Tile {
             Tile::Fetch => Icon::Install,
             Tile::ScreenOff => Icon::Clock,
             Tile::Avb => Icon::Shield,
+            Tile::Root => Icon::Shield,
             Tile::Serve => Icon::Globe,
             Tile::ImageBackup => Icon::Backup,
         })
@@ -238,6 +244,7 @@ impl Tile {
             Tile::Fetch => Some(Screen::Fetch),
             Tile::ScreenOff => Some(Screen::ScreenOff),
             Tile::Avb => Some(Screen::Avb),
+            Tile::Root => Some(Screen::Root),
             Tile::Serve => Some(Screen::Serve),
             Tile::ImageBackup => Some(Screen::ImageBackup),
         }
