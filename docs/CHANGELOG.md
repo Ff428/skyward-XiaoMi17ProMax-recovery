@@ -2,7 +2,7 @@
 
 镜像名固定：`skyward-OS4.0.8.0-XiaoMi17ProMax.img`（品牌版，首页与关于页写「卑鄙坑Baby」）
 与 `skyward-OS4.0.8.0-XiaoMi17ProMax-official.img`（官方版，写 Skyward），两版只差品牌字，
-其余字节一致。文件名里的 `4.0.8.0` 是交付代号，底座是官方 `OS4.0.8.0.XPBCNXM`。
+其余字节一致。文件名里的 `4.0.8.0` 是交付代号，底座是官方 `OS4.0.6.0.XPBCNXM`。
 
 出包见 [BUILD.md](BUILD.md)，用法见 [使用.md](使用.md)，环境与坑见 [../AGENTS.md](../AGENTS.md)。
 CI 发布的 `<tag>-release-notes.md` 就是这份文件。

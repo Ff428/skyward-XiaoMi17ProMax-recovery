@@ -231,7 +231,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           {
-            echo "小米 17 Pro Max（\`popsicle\`，底座 \`OS4.0.8.0.XPBCNXM\`）。同一棵树、同一份源码，两版只差品牌字。"
+            echo "小米 17 Pro Max（\`popsicle\`，交付代号 \`4.0.8.0\`，底座 \`OS4.0.6.0.XPBCNXM\`）。同一棵树、同一份源码，两版只差品牌字。"
             echo
             echo "| 文件 | 是什么 |"
             echo "|---|---|"
@@ -240,7 +240,7 @@ jobs:
             echo
             echo "校验：\`sha256sum -c SHA256SUMS\`。刷入、校验、从源码重建见 README。"
             echo
-            echo "文件名里的 \`4.0.8.0\` 是交付代号，底座是 \`OS4.0.8.0.XPBCNXM\`（见 docs/CHANGELOG.md）。"
+            echo "文件名里的 \`4.0.8.0\` 是交付代号，底座是 \`OS4.0.6.0.XPBCNXM\`（见 docs/CHANGELOG.md）。"
           } > notes.md
           # 幂等：tag 移动、或同一 tag 重跑一次时，不要因为「release 已存在」就炸。
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
