@@ -95,11 +95,17 @@ pub fn upgrade(state: &mut super::State) {
     ];
     let mut old_rest = default_rest();
     old_rest.retain(|entry| !FLASH.contains(entry));
+    // 「其他」里那几条的先后用户可能自己拖过（只要有那五条以外的东西在别处
+    // 就说明动过，形状就变了），所以这里只比有没有、不比先后。
+    let mut stored = state.home_rest.clone();
+    let mut want = old_rest.clone();
+    stored.sort_by_key(|entry| entry.id());
+    want.sort_by_key(|entry| entry.id());
     let untouched = state.home_top.is_empty()
         && state.home_sections.len() == 1
         && old_names.contains(&state.home_sections[0].name)
         && state.home_sections[0].entries == FLASH.to_vec()
-        && state.home_rest == old_rest;
+        && stored == want;
     if !untouched {
         return;
     }
