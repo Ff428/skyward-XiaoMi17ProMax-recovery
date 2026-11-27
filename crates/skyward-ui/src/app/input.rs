@@ -20,7 +20,6 @@ impl App {
             Screen::DataApps if matches!(&self.state.apps, Some(Ok(_))) => Some(Action::AppPage(step)),
             Screen::SystemApps => Some(Action::SysPage(step)),
             Screen::Modules if matches!(&self.state.apps, Some(Ok(_))) => Some(Action::ModulePage(step)),
-            Screen::Partitions => Some(Action::PartPage(step)),
             _ => None,
         }
     }
@@ -69,15 +68,20 @@ impl App {
                     let edge = theme.m.dp(90.0);
                     let step = theme.m.row_h / 2.0;
                     let floor = self.h as f32;
-                    if y < edge {
-                        let at = (self.top().1 - step).max(0.0);
-                        self.top_mut().1 = at;
+                    // 到了头就别再算：算出来没变还照样重画，就是白掉帧。
+                    let was = self.top().1;
+                    let at = if y < edge {
+                        (was - step).max(0.0)
                     } else if y > floor - edge {
-                        let most = self.max_scroll();
-                        let at = (self.top().1 + step).min(most);
+                        (was + step).min(self.max_scroll())
+                    } else {
+                        was
+                    };
+                    let scrolled = (at - was).abs() > 0.5;
+                    if scrolled {
                         self.top_mut().1 = at;
                     }
-                    let page_y = y + self.top().1;
+                    let page_y = y + at;
                     // 拎着的那一条整行（图标、文字、热区）跟着手指走。
                     self.state.home_drag = Some((drag.entry, page_y - drag.row_h / 2.0));
                     // 手指跑到第一行上面（「单独放在首页」那一段）就是放进顶置。
@@ -101,7 +105,14 @@ impl App {
                             Vec::new()
                         }
                     } else {
-                        self.dirty = true;
+                        // 浮起那张卡挪了才要重画；手指在同一个像素里抖不算。
+                        let moved_ghost = match self.state.home_drag {
+                            Some((_, was)) => (was - (page_y - drag.row_h / 2.0)).abs() > 0.9,
+                            None => true,
+                        };
+                        if moved_ghost || scrolled {
+                            self.dirty = true;
+                        }
                         Vec::new()
                     }
                 }

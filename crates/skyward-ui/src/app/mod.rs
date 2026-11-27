@@ -2114,8 +2114,8 @@ impl App {
         if self.display_on && self.install_writing() {
             return Some(now + INSTALL_FRAME_MS);
         }
-        // 排序页上那一栏正滑回来：每 16 ms 要一帧。
-        if self.state.home_slide.is_some() {
+        // 排序页那一栏正滑回来、分区那一屏正滑进来：每 16 ms 要一帧。
+        if self.state.home_slide.is_some() || self.state.part_slide.is_some() {
             return Some(now + 16);
         }
         let held = match self.drag {
@@ -2422,6 +2422,12 @@ impl App {
         {
             self.drag = Drag::Held;
             fx.extend(self.held_entry(i));
+        }
+        // 分区翻页：那一屏从上下滑到位（2026-11-28）。
+        if let Some(slide) = self.state.part_slide {
+            let next = slide * 0.55;
+            self.state.part_slide = if next.abs() < 6.0 { None } else { Some(next) };
+            self.refresh();
         }
         // 那一栏滑回自己的位置：每帧收一半，收到看不清就停（2026-11-28）。
         if let Some((slot, slide)) = self.state.home_slide {

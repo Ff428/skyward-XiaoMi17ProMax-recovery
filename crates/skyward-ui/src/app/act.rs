@@ -1040,11 +1040,10 @@ impl App {
             Action::PartPage(by) => {
                 let page = self.state.part_page as i32 + by;
                 self.state.part_page = page.max(0) as usize;
+                // 新一页从下面/上面滑进来，收到 0：往后翻从下方进，往前翻从上方进。
+                let tall = self.theme().m.h as f32;
+                self.state.part_slide = Some(if by > 0 { tall } else { -tall });
                 self.refresh();
-                // 翻页当成接着往下/往上滑：往后翻落到新一页的顶上，往前翻落到
-                // 它的底下，看着就是一直在滑，而不是跳一下（2026-11-28）。
-                let to = if by > 0 { 0.0 } else { self.max_scroll() };
-                self.seek_to(to, now);
                 return Vec::new();
             }
             Action::DeleteLayout(at) => {

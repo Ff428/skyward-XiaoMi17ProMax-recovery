@@ -98,6 +98,14 @@ impl Canvas {
     /// A canvas `w` × `h` that holds rows `rows` of it whole, as whatever
     /// its memory held before: for drawing into a part at a time, where
     /// what is not drawn yet is never shown.
+    /// 画布这一帧只拿着 rows `top..bottom`：这一段落在里面才值得画。
+    /// 一整页三屏、屏幕只显示一屏时，行与字的栅格化能省掉三分之二
+    /// （2026-11-28，拖动掉帧）。
+    pub fn covers(&self, y: f32, h: f32) -> bool {
+        let (a, b) = (y.max(0.0), (y + h).max(0.0));
+        b > self.top as f32 && a < self.bottom as f32
+    }
+
     pub fn unfilled(w: u32, h: u32, rows: std::ops::Range<u32>) -> Self {
         let (top, bottom) = (rows.start.min(h), rows.end.clamp(rows.start.min(h), h));
         let n = (w * (bottom - top) * 4) as usize;

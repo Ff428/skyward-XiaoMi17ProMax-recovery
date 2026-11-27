@@ -838,7 +838,10 @@ pub fn home_order(cx: &Ctx) -> Frame {
         let low = (fitted(t, y) as f32 - m.row_h - m.margin).max(m.content_top);
         let at = top.clamp(m.content_top, low);
         // 只画，不占热区：它压在别的行上，再加一个 Hit 就会把那一行的点击吃掉。
-        let _ = widgets::list(&mut c, t, f, at, &[row]);
+        // 底色用「按下去」那个色，拎在手里的一行一眼看得出来（2026-11-28）。
+        let mut tone = widgets::Tone::page(t);
+        tone.card = crate::color::over(t.pal.row_press, t.pal.card);
+        let _ = widgets::list_toned(&mut c, t, f, at, &[row], &tone);
     }
 
     // 首页标题、布局备份、新建一栏、恢复默认。
@@ -4797,10 +4800,9 @@ pub fn partitions(cx: &Ctx) -> Frame {
     match &s.partitions {
         Some(Ok(list_rows)) => {
             // 这台机器 by-name 底下有一百六十几条，一次画进画布要十几屏；画布
-            // 装不下就被截在屏幕口上——文字断、卡片底是直角。按三十条一页发。
-            // 一屏一页，跟应用管理一样：往上滑下一页、往下滑上一页。
-            let room = t.m.h as f32 - top - t.m.margin * 2.0 - t.m.section_block - t.m.row_h * 2.0;
-            let per = ((room / t.m.row_h).floor() as usize).max(1);
+            // 装不下就被截在屏幕口上——文字断、卡片底是直角。三十条一页，
+            // 翻页用列表末尾那两行（2026-11-28：按钮，不要滑动翻页）。
+            let per = 30usize;
             let pages = list_rows.len().div_ceil(per).max(1);
             let page = s.part_page.min(pages - 1);
             let from = page * per;
@@ -4813,13 +4815,25 @@ pub fn partitions(cx: &Ctx) -> Frame {
                 let row = Row::new(name).icon(PURPLE, Icon::Layers);
                 shown.push(if s.dump_pick == Some(from + k) { row.trail(Trail::Check(true)) } else { row.trail(Trail::Text(size)) });
             }
-            let pick = widgets::list(&mut c, t, f, y, &shown);
-            out.extend(hits(&pick.rows, &(0..names.len()).map(|k| Action::PickDump(from + k)).collect::<Vec<_>>()));
-            y = pick.bottom + t.m.card_gap;
+            // 翻页摆在列表最后：上一页 / 下一页（右边写第几页 / 共几页）。
+            let mut acts: Vec<Action> = (0..names.len()).map(|k| Action::PickDump(from + k)).collect();
             if pages > 1 {
-                let note = format!("{} · {}", tally, l.pick(["上滑下一页，下滑上一页", "上滑下一頁，下滑上一頁", "Swipe up for the next page"]));
-                y = widgets::footnote(&mut c, t, f, y, &note) + t.m.card_gap;
+                if page > 0 {
+                    shown.push(Row::new(l.pick(["上一页", "上一頁", "Previous"])).icon(SLATE, Icon::Layers).trail(Trail::Arrow));
+                }
+                shown.push(Row::new(l.pick(["下一页", "下一頁", "Next"])).icon(BLUE, Icon::Layers).trail(Trail::Text(tally.as_str())));
             }
+            // 翻页时这一屏从上下滑进来，不是一下换成新的。
+            let dy = s.part_slide.unwrap_or(0.0);
+            let pick = widgets::list(&mut c, t, f, y + dy, &shown);
+            if pages > 1 {
+                if page > 0 {
+                    acts.push(Action::PartPage(-1));
+                }
+                acts.push(Action::PartPage(1));
+            }
+            out.extend(hits(&pick.rows, &acts));
+            y = pick.bottom - dy + t.m.card_gap;
             match s.dump_pick.and_then(|k| names.get(k).cloned()) {
                 Some(name) => {
                     let note = tr!(l, "导出「{name}」到内部存储", "匯出「{name}」到內部儲存", "Export “{name}” to internal storage");

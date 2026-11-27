@@ -1821,7 +1821,10 @@ pub fn list_toned(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, rows: &[Row], 
     let mut y = top;
     let mut rects = Vec::new();
     for (r, l) in rows.iter().zip(&lays) {
-        draw_row(c, t, f, r, l, y, tone);
+        // 这一帧没拿着这一段就不画：位置与热区照旧，只是不栅格化那些字。
+        if c.covers(y, l.h) {
+            draw_row(c, t, f, r, l, y, tone);
+        }
         rects.push(Rect::new(m.margin, y, w, l.h));
         y += l.h;
     }
