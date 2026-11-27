@@ -8,7 +8,7 @@ use crate::app::{
     USB_DRIVE_WANTED, WIPES, installs, listed, starting,
 };
 use crate::app::{is_newer, KernelSuEnd, KernelSuJob};
-use crate::app::{default_sections, rest_is_default, Entry, Section};
+use crate::app::{factory, rest_is_default, Entry, Section};
 use crate::canvas::Canvas;
 use crate::color::Rgba;
 use crate::editor;
@@ -467,9 +467,10 @@ pub fn home(cx: &Ctx) -> Frame {
     // 只有第一次用（显示层补一栏内置分类）才需要自己造一份；其余情况直接借用
     // `State` 里的，首页是常驻页，滑一下不该克隆整张布局。
     let (sections, top_all, rest_all): (std::borrow::Cow<[Section]>, std::borrow::Cow<[Entry]>, std::borrow::Cow<[Entry]>) = if fresh {
-        let mut rest = cx.state.home_rest.clone();
-        rest.retain(|entry| !matches!(entry, Entry::Install | Entry::Backup | Entry::Restore));
-        (std::borrow::Cow::Owned(default_sections(l)), std::borrow::Cow::Borrowed(&[]), std::borrow::Cow::Owned(rest))
+        // 出厂的四栏：刷机备份 / 文件模块 / 其他分类 / 系统设置，无线网络单独
+        // 摆在最上面（2026-11-28 按用户给的图定的口径）。
+        let (top, sections, rest) = factory(l);
+        (std::borrow::Cow::Owned(sections), std::borrow::Cow::Owned(top), std::borrow::Cow::Owned(rest))
     } else {
         (
             std::borrow::Cow::Borrowed(&cx.state.home_sections[..]),
@@ -698,12 +699,11 @@ pub fn home_order(cx: &Ctx) -> Frame {
     let pick = s.home_pick;
     // 第一次用的时候，内置的「刷机与备份」也要在排序页里看得见、动得了。
     let fresh = s.home_sections.is_empty() && s.home_top.is_empty() && rest_is_default(&s.home_rest);
-    let (sections, top_list) = if fresh {
-        let mut rest = s.home_rest.clone();
-        rest.retain(|entry| !matches!(entry, Entry::Install | Entry::Backup | Entry::Restore));
-        (default_sections(l), Vec::new())
+    let (sections, top_list, rest_list) = if fresh {
+        let (top, sections, rest) = factory(l);
+        (sections, top, rest)
     } else {
-        (s.home_sections.clone(), s.home_top.clone())
+        (s.home_sections.clone(), s.home_top.clone(), s.home_rest.clone())
     };
 
     // 单独放在首页的条目（最上面那一块）。点小标题把拎着的那条放上来。
@@ -747,7 +747,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
     let rest_at = s.home_rest_at.unwrap_or(sections.len()).min(sections.len());
     for (i, section) in sections.iter().enumerate() {
         if i == rest_at {
-            y = order_rest_block(&mut c, t, f, l, y, &mut out, s, pick, hint) + m.card_gap;
+            y = order_rest_block(&mut c, t, f, l, y, &mut out, s, &rest_list, pick, hint) + m.card_gap;
         }
         let before = y;
         // 标题带上条目数；右边留四个圆钮。
@@ -772,8 +772,8 @@ pub fn home_order(cx: &Ctx) -> Frame {
         let right = m.w as f32 - m.margin - d / 2.0;
         let acts = [
             (Action::HomeEditSection(i), Icon::Pencil),
-            (Action::HomeShiftSection { at: i, up: true }, Icon::Sort),
-            (Action::HomeShiftSection { at: i, up: false }, Icon::Sort),
+            (Action::HomeShiftSection { at: i, up: true }, Icon::SortUp),
+            (Action::HomeShiftSection { at: i, up: false }, Icon::SortDown),
             (Action::HomeDeleteSection(i), Icon::Wipe),
         ];
         for (k, (action, icon)) in acts.into_iter().enumerate() {
@@ -814,7 +814,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
 
     // 「其他」摆在 `rest_at` 说的位置；它不能删，只能上下挪。
     if rest_at >= sections.len() {
-        y = order_rest_block(&mut c, t, f, l, y, &mut out, s, pick, hint);
+        y = order_rest_block(&mut c, t, f, l, y, &mut out, s, &rest_list, pick, hint);
     }
 
     // 首页标题、布局备份、新建一栏、恢复默认。
@@ -876,6 +876,7 @@ fn order_rest_block(
     mut y: f32,
     out: &mut Vec<Hit>,
     s: &State,
+    rest: &[Entry],
     pick: Option<Entry>,
     hint: &str,
 ) -> f32 {
@@ -886,7 +887,7 @@ fn order_rest_block(
     } else {
         s.home_rest_name.clone()
     };
-    y = widgets::section(c, t, f, y, &format!("{rest_name} · {}", s.home_rest.len()));
+    y = widgets::section(c, t, f, y, &format!("{rest_name} · {}", rest.len()));
     let d = m.dp(30.0);
     let step = m.dp(38.0);
     out.push(Hit {
@@ -898,8 +899,8 @@ fn order_rest_block(
     // 三个钮：改名、上移、下移。没有删除——它是兜底的那一栏。
     let acts = [
         (Action::HomeRenameRest, Icon::Pencil),
-        (Action::HomeShiftRest { up: true }, Icon::Sort),
-        (Action::HomeShiftRest { up: false }, Icon::Sort),
+        (Action::HomeShiftRest { up: true }, Icon::SortUp),
+        (Action::HomeShiftRest { up: false }, Icon::SortDown),
     ];
     for (k, (action, icon)) in acts.into_iter().enumerate() {
         let bx = right - (2 - k) as f32 * step;
@@ -909,11 +910,10 @@ fn order_rest_block(
             action,
         });
     }
-    if s.home_rest.is_empty() {
+    if rest.is_empty() {
         return widgets::footnote(c, t, f, y, l.pick(["没有剩下的条目", "沒有剩下的條目", "Nothing left over"]));
     }
-    let rows: Vec<Row> = s
-        .home_rest
+    let rows: Vec<Row> = rest
         .iter()
         .map(|entry| {
             let mut row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon());
@@ -924,8 +924,7 @@ fn order_rest_block(
         })
         .collect();
     let list = widgets::list(c, t, f, y, &rows);
-    let actions: Vec<Action> = s
-        .home_rest
+    let actions: Vec<Action> = rest
         .iter()
         .map(|entry| match pick {
             Some(picked) if picked == *entry => Action::HomePick(*entry),
@@ -934,7 +933,7 @@ fn order_rest_block(
         })
         .collect();
     out.extend(hits(&list.rows, &actions));
-    pencil_buttons(c, t, out, &list.rows, &s.home_rest);
+    pencil_buttons(c, t, out, &list.rows, rest);
     list.bottom
 }
 
@@ -1237,9 +1236,22 @@ pub fn layout(cx: &Ctx) -> Frame {
             )
         }
         Some(Ok(files)) => {
-            let rows: Vec<Row> = files.iter().map(|file| Row::new(&file.name).icon(BLUE, Icon::Backup).trail(Trail::Arrow)).collect();
+            // 一行两份含义：点名字按这一份改，右边那枚是删掉它。行尾不再画
+            // 箭头，那枚圆钮就是它的去处（2026-11-28）。
+            let rows: Vec<Row> = files.iter().map(|file| Row::new(&file.name).icon(BLUE, Icon::Backup)).collect();
             let list = widgets::list(&mut c, t, f, y, &rows);
-            out.extend(hits(&list.rows, &(0..files.len()).map(Action::ImportLayout).collect::<Vec<_>>()));
+            let d = m.dp(30.0);
+            for (k, row) in list.rows.iter().enumerate() {
+                let cut = m.inner + d + m.dp(8.0);
+                out.push(Hit { rect: Rect { w: row.w - cut, ..*row }, action: Action::ImportLayout(k) });
+                let cx = row.x + row.w - m.inner - d / 2.0;
+                let cy = row.y + row.h / 2.0;
+                widgets::icon_button(&mut c, t, cx, cy, d, t.pal.danger, Icon::Wipe);
+                out.push(Hit {
+                    rect: Rect::new(cx - d / 2.0 - m.dp(6.0), cy - d / 2.0 - m.dp(6.0), d + m.dp(12.0), d + m.dp(12.0)),
+                    action: Action::DeleteLayout(k),
+                });
+            }
             y = list.bottom;
         }
     }

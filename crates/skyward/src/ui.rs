@@ -4649,6 +4649,20 @@ impl Pages<'_> {
                 let listed = read_layouts(&into).map_err(|e| format!("{e:#}"));
                 self.app.layouts_listed(listed, now);
             }
+            Effect::DeleteLayout { path } => {
+                let outcome = fs::remove_file(&path).with_context(|| format!("delete {path}")).map_err(|e| format!("{e:#}"));
+                match &outcome {
+                    Ok(()) => {
+                        let _ = skyward_sys::kmsg(&format!("the layout {path} is gone"));
+                    }
+                    Err(why) => {
+                        let _ = skyward_sys::kmsg(&format!("the layout {path} was not deleted: {why}"));
+                    }
+                }
+                let into = Path::new(skyward_crypto::data::SDCARD).join(STORAGE_SKYWARD);
+                let listed = read_layouts(&into).map_err(|e| format!("{e:#}"));
+                self.app.layouts_listed(listed, now);
+            }
             Effect::ImportLayout { path } => {
                 let outcome = (|| -> Result<()> {
                     let text = fs::read_to_string(&path).with_context(|| format!("read {path}"))?;

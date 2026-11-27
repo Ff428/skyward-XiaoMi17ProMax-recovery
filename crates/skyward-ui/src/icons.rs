@@ -71,6 +71,10 @@ pub enum Icon {
     Pencil,
     /// 三条由长到短的线加一个小箭头：文件管理的「排序」（2026-11-24）。
     Sort,
+    /// 三条横杠加一个向上的箭头：上移。
+    SortUp,
+    /// 三条横杠加一个向下的箭头：下移。
+    SortDown,
     /// 一个方框里一个勾：文件管理的「多选」。
     Choose,
     /// 一个放大镜：文件管理的「搜索」。
@@ -78,16 +82,16 @@ pub enum Icon {
 }
 
 /// 全部图标，按上面的顺序：给「选个图标」那页用。
-pub const ALL: [Icon; 27] = [Icon::Install, Icon::Backup, Icon::Restore, Icon::Mount, Icon::Wipe, Icon::Gear, Icon::Power, Icon::Globe, Icon::Clock, Icon::Terminal, Icon::Usb, Icon::UsbDrive, Icon::Layers, Icon::Phone, Icon::Lock, Icon::More, Icon::Folder, Icon::Log, Icon::Shield, Icon::Wlan, Icon::Battery, Icon::Systems, Icon::Record, Icon::Pencil, Icon::Sort, Icon::Choose, Icon::Search];
+pub const ALL: [Icon; 29] = [Icon::Install, Icon::Backup, Icon::Restore, Icon::Mount, Icon::Wipe, Icon::Gear, Icon::Power, Icon::Globe, Icon::Clock, Icon::Terminal, Icon::Usb, Icon::UsbDrive, Icon::Layers, Icon::Phone, Icon::Lock, Icon::More, Icon::Folder, Icon::Log, Icon::Shield, Icon::Wlan, Icon::Battery, Icon::Systems, Icon::Record, Icon::Pencil, Icon::Sort, Icon::SortUp, Icon::SortDown, Icon::Choose, Icon::Search];
 
 impl Icon {
     /// 写进设置文件用的短名字。
     pub fn id(self) -> &'static str {
-        match self { Icon::Install => "install", Icon::Backup => "backup", Icon::Restore => "restore", Icon::Mount => "mount", Icon::Wipe => "wipe", Icon::Gear => "gear", Icon::Power => "power", Icon::Globe => "globe", Icon::Clock => "clock", Icon::Terminal => "terminal", Icon::Usb => "usb", Icon::UsbDrive => "usb_drive", Icon::Layers => "layers", Icon::Phone => "phone", Icon::Lock => "lock", Icon::More => "more", Icon::Folder => "folder", Icon::Log => "log", Icon::Shield => "shield", Icon::Wlan => "wlan", Icon::Battery => "battery", Icon::Systems => "systems", Icon::Record => "record", Icon::Pencil => "pencil", Icon::Sort => "sort", Icon::Choose => "choose", Icon::Search => "search", }
+        match self { Icon::Install => "install", Icon::Backup => "backup", Icon::Restore => "restore", Icon::Mount => "mount", Icon::Wipe => "wipe", Icon::Gear => "gear", Icon::Power => "power", Icon::Globe => "globe", Icon::Clock => "clock", Icon::Terminal => "terminal", Icon::Usb => "usb", Icon::UsbDrive => "usb_drive", Icon::Layers => "layers", Icon::Phone => "phone", Icon::Lock => "lock", Icon::More => "more", Icon::Folder => "folder", Icon::Log => "log", Icon::Shield => "shield", Icon::Wlan => "wlan", Icon::Battery => "battery", Icon::Systems => "systems", Icon::Record => "record", Icon::Pencil => "pencil", Icon::Sort => "sort", Icon::SortUp => "sort_up", Icon::SortDown => "sort_down", Icon::Choose => "choose", Icon::Search => "search", }
     }
 
     pub fn from_id(id: &str) -> Option<Icon> {
-        Some(match id { "install" => Icon::Install, "backup" => Icon::Backup, "restore" => Icon::Restore, "mount" => Icon::Mount, "wipe" => Icon::Wipe, "gear" => Icon::Gear, "power" => Icon::Power, "globe" => Icon::Globe, "clock" => Icon::Clock, "terminal" => Icon::Terminal, "usb" => Icon::Usb, "usb_drive" => Icon::UsbDrive, "layers" => Icon::Layers, "phone" => Icon::Phone, "lock" => Icon::Lock, "more" => Icon::More, "folder" => Icon::Folder, "log" => Icon::Log, "shield" => Icon::Shield, "wlan" => Icon::Wlan, "battery" => Icon::Battery, "systems" => Icon::Systems, "record" => Icon::Record, "pencil" => Icon::Pencil, "sort" => Icon::Sort, "choose" => Icon::Choose, "search" => Icon::Search, _ => return None })
+        Some(match id { "install" => Icon::Install, "backup" => Icon::Backup, "restore" => Icon::Restore, "mount" => Icon::Mount, "wipe" => Icon::Wipe, "gear" => Icon::Gear, "power" => Icon::Power, "globe" => Icon::Globe, "clock" => Icon::Clock, "terminal" => Icon::Terminal, "usb" => Icon::Usb, "usb_drive" => Icon::UsbDrive, "layers" => Icon::Layers, "phone" => Icon::Phone, "lock" => Icon::Lock, "more" => Icon::More, "folder" => Icon::Folder, "log" => Icon::Log, "shield" => Icon::Shield, "wlan" => Icon::Wlan, "battery" => Icon::Battery, "systems" => Icon::Systems, "record" => Icon::Record, "pencil" => Icon::Pencil, "sort" => Icon::Sort, "sort_up" => Icon::SortUp, "sort_down" => Icon::SortDown, "choose" => Icon::Choose, "search" => Icon::Search, _ => return None })
     }
 }
 
@@ -372,6 +376,14 @@ const PENCIL: &[Part] = &[
 const SORT: &[Part] = &[add(Shape::EvenOdd(
     "M4,6 H19 V8.6 H4 Z     M4,12 H15 V14.6 H4 Z     M4,18 H11 V20.6 H4 Z     M20,16.5 H22.6 V21.5 H20 Z     M18.2,20.5 L21.3,25.2 L24.4,20.5 Z",
 ))];
+/// 三条横杠加一个向上的箭头：上移（下移那一枚把箭头翻过来）。
+const SORT_UP: &[Part] = &[add(Shape::EvenOdd(
+    "M4,6 H19 V8.6 H4 Z     M4,12 H15 V14.6 H4 Z     M4,18 H11 V20.6 H4 Z     M20,16.5 H22.6 V21.5 H20 Z     M18.2,17.5 L21.3,12.8 L24.4,17.5 Z",
+))];
+/// 三条横杠加一个向下的箭头：下移。
+const SORT_DOWN: &[Part] = &[add(Shape::EvenOdd(
+    "M4,6 H19 V8.6 H4 Z     M4,12 H15 V14.6 H4 Z     M4,18 H11 V20.6 H4 Z     M20,16.5 H22.6 V21.5 H20 Z     M18.2,20.5 L21.3,25.2 L24.4,20.5 Z",
+))];
 /// 一个方框加一个勾：多选。
 const CHOOSE: &[Part] = &[add(Shape::EvenOdd(
     "M4,4 H24 V24 H4 Z     M6.6,6.6 V21.4 H21.4 V6.6 Z     M11.2,17.3 L8.4,14.5 L10,12.9 L11.2,14.1 L17.4,7.9 L19,9.5 Z",
@@ -423,6 +435,8 @@ fn outline(icon: Icon) -> (&'static [Part], f32) {
         Icon::Record => (RECORD, 1.0),
         Icon::Pencil => (PENCIL, 1.0),
         Icon::Sort => (SORT, 1.0),
+        Icon::SortUp => (SORT_UP, 1.0),
+        Icon::SortDown => (SORT_DOWN, 1.0),
         Icon::Choose => (CHOOSE, 1.0),
         Icon::Search => (SEARCH, 1.0),
     }

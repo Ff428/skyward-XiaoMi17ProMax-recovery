@@ -664,6 +664,8 @@ pub enum Action {
     /// 把现在这一份布局写成文件；以及从存储里第几个文件导入。
     ExportLayout,
     ImportLayout(usize),
+    /// 删掉存储里的这一份布局（索引见 `State::layouts`）。
+    DeleteLayout(usize),
     /// 挑位置：进导出用的目录浏览、进导入用的文件浏览、上一层、进一层、
     /// 就在这一层导出、导入这个文件。
     LayoutBrowseExport,
@@ -727,6 +729,8 @@ pub enum Effect {
     ExportLayout,
     ReadLayouts,
     ImportLayout { path: String },
+    /// 删掉 `path` 这一份布局，然后重新列一遍。
+    DeleteLayout { path: String },
     /// 把布局写到指定的那个目录里。
     ExportLayoutTo { path: String },
     /// Start receiving a package over USB.
@@ -1034,6 +1038,9 @@ enum Drag {
     Candidates { x0: f32, step: i32, tap: Option<usize> },
     /// 编辑态下拎着一枚磁贴走：拎的是哪一枚、手指现在在哪儿、它原来在第几格。
     TileDrag(TileDrag),
+    /// 排序页上长按拎起来的一条：它在哪一列、那一列第一行的顶与行距，手指
+    /// 现在指着第几格就把它挪到第几格（2026-11-28）。
+    EntryDrag(EntryDrag),
 }
 
 /// 录屏那枚胶囊上一帧画在哪儿：整枚、左边暂停/继续那一下、右边结束那一下。
@@ -1629,6 +1636,26 @@ impl TileGrid {
     }
 }
 
+/// 排序页上的那一列：单独摆在最上面的、某一栏、还是「其他」。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OrderList {
+    Top,
+    Section(usize),
+    Rest,
+}
+
+/// 手指拎着的一条：哪一条、在哪一列、起手时第几格；那一列第一行的顶与
+/// 行距，指尖落在第几格就把它挪到第几格。行高一样，所以几何只记一份。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct EntryDrag {
+    entry: Entry,
+    list: OrderList,
+    from: usize,
+    first_y: f32,
+    row_h: f32,
+    count: usize,
+}
+
 /// 手指拖着的那一枚磁贴：它自己，和手指现在在哪儿。
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TileDrag {
@@ -2079,6 +2106,8 @@ impl App {
         }
         let held = match self.drag {
             Drag::Press { action: Some(Action::OpenEntry(_)), at, .. } => Some(at + LONG_PRESS_MS),
+            // 排序页上按住一条，够久就拎起来拖着走。
+            Drag::Press { action: Some(Action::HomePick(_)), at, .. } => Some(at + LONG_PRESS_MS),
             _ => None,
         };
         let repeat = match self.button {
@@ -2380,6 +2409,20 @@ impl App {
             self.drag = Drag::Held;
             fx.extend(self.held_entry(i));
         }
+        // 排序页上按住一条：拎起来，之后跟着手指上下走（2026-11-28）。
+        if let Drag::Press { action: Some(Action::HomePick(entry)), at, .. } = self.drag
+            && now >= at + LONG_PRESS_MS
+        {
+            match self.lift_entry(entry) {
+                Some(lifted) => {
+                    self.state.home_pick = None;
+                    self.drag = Drag::EntryDrag(lifted);
+                    fx.push(Effect::Haptic);
+                    self.refresh();
+                }
+                None => self.drag = Drag::Held,
+            }
+        }
         // 模块长按 = 标记下次启动时移除（再长按一次取消），和 KSU 的做法一致。
         if let Drag::Press { action: Some(Action::ModuleToggle(i)), at, .. } = self.drag
             && now >= at + LONG_PRESS_MS
@@ -2577,6 +2620,72 @@ impl App {
         Settings::of(&self.state)
     }
 
+    /// 排序页上这一条现在在哪一列、第几格。
+    fn order_place(&self, entry: Entry) -> (OrderList, usize) {
+        if let Some(at) = self.state.home_top.iter().position(|e| *e == entry) {
+            return (OrderList::Top, at);
+        }
+        for (i, section) in self.state.home_sections.iter().enumerate() {
+            if let Some(at) = section.entries.iter().position(|e| *e == entry) {
+                return (OrderList::Section(i), at);
+            }
+        }
+        (OrderList::Rest, self.state.home_rest.iter().position(|e| *e == entry).unwrap_or(0))
+    }
+
+    /// 长按之后把这一条拎起来：那一列第一行的顶、行距、条数，全取这一帧画
+    /// 出来的命中框，不再另算一遍（免得「画在那儿、拖不动」）。
+    fn lift_entry(&self, entry: Entry) -> Option<EntryDrag> {
+        let (list, from) = self.order_place(entry);
+        let frame = self.frame.as_ref()?;
+        let mut first_y = f32::MAX;
+        let mut row_h = 0.0;
+        let mut count = 0;
+        for hit in &frame.hits {
+            let Action::HomePick(other) = hit.action else { continue };
+            if self.order_place(other).0 != list {
+                continue;
+            }
+            count += 1;
+            if hit.rect.y < first_y {
+                first_y = hit.rect.y;
+                row_h = hit.rect.h;
+            }
+        }
+        if count == 0 || row_h <= 0.0 {
+            return None;
+        }
+        Some(EntryDrag { entry, list, from, first_y, row_h, count })
+    }
+
+    /// 把拎着的那一条挪到它所在那一列的第 `to` 格。
+    fn move_entry(&mut self, entry: Entry, to: usize) -> bool {
+        let (list, from) = self.order_place(entry);
+        if from == to {
+            return false;
+        }
+        match list {
+            OrderList::Top => {
+                let moved = self.state.home_top.remove(from);
+                let at = to.min(self.state.home_top.len());
+                self.state.home_top.insert(at, moved);
+            }
+            OrderList::Section(i) => {
+                if let Some(section) = self.state.home_sections.get_mut(i) {
+                    let moved = section.entries.remove(from);
+                    let at = to.min(section.entries.len());
+                    section.entries.insert(at, moved);
+                }
+            }
+            OrderList::Rest => {
+                let moved = self.state.home_rest.remove(from);
+                let at = to.min(self.state.home_rest.len());
+                self.state.home_rest.insert(at, moved);
+            }
+        }
+        true
+    }
+
     /// Take the settings `kept` from the starts before, and speak the
     /// language chosen then, or else the one the system `named`, or else
     /// the one the pages last spoke.
@@ -2589,6 +2698,9 @@ impl App {
         {
             self.state.lang = lang;
         }
+        // 上一版的出厂摆法（一栏「刷机与备份」+ 其余全在「其他」）换成这一版
+        // 的四栏；自己分过组、改过名的一律不动（2026-11-28）。
+        home::upgrade(&mut self.state);
         self.refresh();
     }
 

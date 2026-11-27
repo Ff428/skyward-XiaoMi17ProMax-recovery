@@ -51,6 +51,29 @@ impl App {
             }
             return Vec::new();
         }
+        // 排序页上拎着一条走：手指落到第几格，它就挪到第几格；松手就放下，
+        // 摆法随即存进设置（2026-11-28）。拎着的时候不上滑、也不翻页。
+        if let Drag::EntryDrag(drag) = self.drag {
+            return match ev {
+                Touch::Move(_, y) => {
+                    let page_y = y + self.top().1;
+                    let span = drag.count.max(1) as f32;
+                    let at = (((page_y - drag.first_y) / drag.row_h).floor()).clamp(0.0, span - 1.0) as usize;
+                    let moved = self.move_entry(drag.entry, at);
+                    if moved {
+                        self.refresh();
+                        vec![Effect::Haptic]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Touch::Up | Touch::Down(..) => {
+                    self.drag = Drag::Idle;
+                    self.refresh();
+                    Vec::new()
+                }
+            };
+        }
         // The card asking to delete is over everything: a finger on its swipe
         // works that, and one anywhere on the card does nothing to the page
         // under it.
@@ -396,6 +419,10 @@ impl App {
                 };
             }
             Touch::Move(x, y) => match std::mem::replace(&mut self.drag, Drag::Idle) {
+                // 拎着一条走的时候不会走到这儿（上面先接住了）；放回去。
+                drag @ Drag::EntryDrag(_) => {
+                    self.drag = drag;
+                }
                 Drag::Press { x: x0, y: y0, action, edge: at_edge, at } => {
                     self.tracker.add(now, y);
                     let (dx, dy) = (x - x0, y - y0);

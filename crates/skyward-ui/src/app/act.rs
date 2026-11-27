@@ -1033,6 +1033,14 @@ impl App {
                     return vec![Effect::ImportLayout { path: file.path.clone() }];
                 }
             }
+            // 删掉存储里的一份布局：页面上那一行右边的那枚是它。
+            Action::DeleteLayout(at) => {
+                if let Some(Ok(files)) = &self.state.layouts
+                    && let Some(file) = files.get(at)
+                {
+                    return vec![Effect::DeleteLayout { path: file.path.clone() }];
+                }
+            }
             Action::HomeTitleDone => {
                 self.state.home_title = self.state.home_title_edit.trim().to_string();
                 self.refresh();
@@ -1649,9 +1657,11 @@ impl App {
     fn materialize_home(&mut self) {
         if self.state.home_sections.is_empty() && self.state.home_top.is_empty() && rest_is_default(&self.state.home_rest) {
             let l = self.state.lang;
-            self.state.home_sections = default_sections(l);
-            let taken: Vec<Entry> = self.state.home_sections.iter().flat_map(|section| section.entries.clone()).collect();
-            self.state.home_rest.retain(|entry| !taken.contains(entry));
+            let (top, sections, rest) = factory(l);
+            self.state.home_top = top;
+            self.state.home_rest_at = Some(sections.len());
+            self.state.home_sections = sections;
+            self.state.home_rest = rest;
         }
     }
 
