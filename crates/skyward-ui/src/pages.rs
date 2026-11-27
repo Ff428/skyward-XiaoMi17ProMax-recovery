@@ -838,8 +838,8 @@ pub fn home_order(cx: &Ctx) -> Frame {
         let row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(entry), entry.icon());
         let low = (fitted(t, y) as f32 - m.row_h - m.margin).max(m.content_top);
         let at = top.clamp(m.content_top, low);
-        let float = widgets::list(&mut c, t, f, at, &[row]);
-        out.push(Hit { rect: float.rows[0], action: Action::HomePick(entry) });
+        // 只画，不占热区：它压在别的行上，再加一个 Hit 就会把那一行的点击吃掉。
+        let _ = widgets::list(&mut c, t, f, at, &[row]);
     }
 
     // 首页标题、布局备份、新建一栏、恢复默认。
@@ -4774,11 +4774,7 @@ pub fn partitions(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
     // 分区表动辄四十几条，三屏装不下：按条数要画布，末尾那张卡的圆角与后
     // 半截分区才滚得到（2026-11-28，跟 0.6.0 无线网络那次同一个毛病）。
-    let count = match &s.partitions {
-        Some(Ok(rows)) => rows.len(),
-        _ => 0,
-    };
-    let mut c = long_page_rows(cx, count + 4);
+    let mut c = long_page_rows(cx, 30 + 10);
     let mut out = Vec::new();
     let top = t.m.content_top;
     let rows = [
@@ -4801,19 +4797,37 @@ pub fn partitions(cx: &Ctx) -> Frame {
     y = widgets::section(&mut c, t, f, y, l.pick(["分区", "分割區", "Partitions"]));
     match &s.partitions {
         Some(Ok(list_rows)) => {
-            let names: Vec<String> = list_rows.iter().map(|(name, _)| name.clone()).collect();
-            let sizes: Vec<String> = list_rows.iter().map(|(_, size)| fmt::bytes(*size)).collect();
-            let shown: Vec<Row> = names
-                .iter()
-                .zip(&sizes)
-                .enumerate()
-                .map(|(k, (name, size))| {
-                    let row = Row::new(name).icon(PURPLE, Icon::Layers);
-                    if s.dump_pick == Some(k) { row.trail(Trail::Check(true)) } else { row.trail(Trail::Text(size)) }
-                })
-                .collect();
+            // 这台机器 by-name 底下有一百六十几条，一次画进画布要十几屏；画布
+            // 装不下就被截在屏幕口上——文字断、卡片底是直角。按三十条一页发。
+            const PER: usize = 30;
+            let pages = list_rows.len().div_ceil(PER).max(1);
+            let page = s.part_page.min(pages - 1);
+            let from = page * PER;
+            let to = (from + PER).min(list_rows.len());
+            let names: Vec<String> = list_rows[from..to].iter().map(|(name, _)| name.clone()).collect();
+            let sizes: Vec<String> = list_rows[from..to].iter().map(|(_, size)| fmt::bytes(*size)).collect();
+            let tally = format!("{} / {}", page + 1, pages);
+            let mut shown: Vec<Row> = Vec::new();
+            for (k, (name, size)) in names.iter().zip(&sizes).enumerate() {
+                let row = Row::new(name).icon(PURPLE, Icon::Layers);
+                shown.push(if s.dump_pick == Some(from + k) { row.trail(Trail::Check(true)) } else { row.trail(Trail::Text(size)) });
+            }
+            // 翻页摆在列表最下面：上一页 / 下一页（第几页 / 共几页）。
+            if pages > 1 {
+                if page > 0 {
+                    shown.push(Row::new(l.pick(["上一页", "上一頁", "Previous"])).icon(SLATE, Icon::Layers).trail(Trail::Arrow));
+                }
+                shown.push(Row::new(l.pick(["下一页", "下一頁", "Next"])).icon(BLUE, Icon::Layers).trail(Trail::Text(tally.as_str())));
+            }
             let pick = widgets::list(&mut c, t, f, y, &shown);
-            out.extend(hits(&pick.rows, &(0..names.len()).map(Action::PickDump).collect::<Vec<_>>()));
+            let mut acts: Vec<Action> = (0..names.len()).map(|k| Action::PickDump(from + k)).collect();
+            if pages > 1 {
+                if page > 0 {
+                    acts.push(Action::PartPage(-1));
+                }
+                acts.push(Action::PartPage(1));
+            }
+            out.extend(hits(&pick.rows, &acts));
             y = pick.bottom + t.m.card_gap;
             match s.dump_pick.and_then(|k| names.get(k).cloned()) {
                 Some(name) => {

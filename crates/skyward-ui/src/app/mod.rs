@@ -664,6 +664,8 @@ pub enum Action {
     /// 把现在这一份布局写成文件；以及从存储里第几个文件导入。
     ExportLayout,
     ImportLayout(usize),
+    /// 分区管理翻页：正数往后、负数往前。
+    PartPage(i32),
     /// 删掉存储里的这一份布局（索引见 `State::layouts`）。
     DeleteLayout(usize),
     /// 挑位置：进导出用的目录浏览、进导入用的文件浏览、上一层、进一层、
@@ -1644,6 +1646,10 @@ enum OrderList {
     Rest,
 }
 
+/// 拖动时隔多久才算下一次（触摸比屏幕快，全接就掉帧）与震动冷却。
+const DRAG_STEP_MS: u64 = 12;
+const HAPTIC_STEP_MS: u64 = 80;
+
 /// 手指拎着的一条：哪一条，整页第一行的顶与行距，整页一共几行。行高一样，
 /// 所以几何只记一份；指尖落在第几行，就把它挪到那一行——那一行在哪一栏，
 /// 它就跟到哪一栏（2026-11-28，跨栏拖动）。
@@ -1733,6 +1739,9 @@ pub struct App {
     shade_editing: bool,
     /// 编辑态下拎着的那一枚磁贴。
     shade_drag: Option<TileDrag>,
+    /// 排序页拖动：上一次真的受理的时刻、上一次震动的时刻（2026-11-28）。
+    drag_at: Option<u64>,
+    haptic_at: Option<u64>,
     /// When to take the screenshot a tile asked for, once the page under the
     /// sheet has been drawn without it.
     shot_when: Option<u64>,
@@ -1932,6 +1941,8 @@ impl App {
             shade_hits: Vec::new(),
             shade_editing: false,
             shade_drag: None,
+            drag_at: None,
+            haptic_at: None,
             shot_when: None,
             frame: None,
             spots: None,
@@ -2708,6 +2719,15 @@ impl App {
             OrderList::Section(i) => self.state.home_sections.get(i)?.entries.get(at).copied(),
             OrderList::Rest => self.state.home_rest.get(at).copied(),
         }
+    }
+
+    /// 拎到「单独放在首页」那一段：放进顶置的第一格。
+    fn move_entry_to_top(&mut self, entry: Entry) -> bool {
+        let (list, _) = self.order_place(entry);
+        if list == OrderList::Top && self.state.home_top.first() == Some(&entry) {
+            return false;
+        }
+        self.move_entry_to_row(entry, 0)
     }
 
     /// 把拎着的那一条挪到整页的第 `flat` 行：那一行在哪一栏就进哪一栏，

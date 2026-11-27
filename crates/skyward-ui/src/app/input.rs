@@ -56,18 +56,35 @@ impl App {
         if let Drag::EntryDrag(drag) = self.drag {
             return match ev {
                 Touch::Move(_, y) => {
+                    // 触摸来得比屏幕快：一条手指能一秒来一两百个 Move，每个都
+                    // 重排 + 整页重画就掉帧。12 ms 内只认第一个（2026-11-28）。
+                    if self.drag_at.is_some_and(|at| now.saturating_sub(at) < DRAG_STEP_MS) {
+                        return Vec::new();
+                    }
+                    self.drag_at = Some(now);
                     let page_y = y + self.top().1;
                     // 拎着的那一条整行（图标、文字、热区）跟着手指走。
                     self.state.home_drag = Some((drag.entry, page_y - drag.row_h / 2.0));
-                    let span = drag.total.max(1) as f32;
-                    let at = (((page_y - drag.first_y) / drag.row_h).floor()).clamp(0.0, span - 1.0) as usize;
-                    let moved = self.move_entry_to_row(drag.entry, at);
+                    // 手指跑到第一行上面（「单独放在首页」那一段）就是放进顶置。
+                    let moved = if page_y < drag.first_y {
+                        self.move_entry_to_top(drag.entry)
+                    } else {
+                        let span = drag.total.max(1) as f32;
+                        let at = (((page_y - drag.first_y) / drag.row_h).floor()).clamp(0.0, span - 1.0) as usize;
+                        self.move_entry_to_row(drag.entry, at)
+                    };
                     if moved {
                         self.state.home_pick = None;
                         self.row_press = None;
                         self.row_art = None;
                         self.refresh();
-                        vec![Effect::Haptic]
+                        // 震动别连着来：一格一次，80 ms 内不再震第二下。
+                        if self.haptic_at.is_none_or(|at| now.saturating_sub(at) >= HAPTIC_STEP_MS) {
+                            self.haptic_at = Some(now);
+                            vec![Effect::Haptic]
+                        } else {
+                            Vec::new()
+                        }
                     } else {
                         self.dirty = true;
                         Vec::new()
@@ -75,6 +92,8 @@ impl App {
                 }
                 Touch::Up | Touch::Down(..) => {
                     self.drag = Drag::Idle;
+                    self.drag_at = None;
+                    self.haptic_at = None;
                     self.state.home_drag = None;
                     self.row_press = None;
                     self.row_art = None;
@@ -397,17 +416,7 @@ impl App {
                 // the finger lands on it, if the finger stays.
                 let row = hit
                     .filter(|&(a, r)| self.frame.as_ref().is_some_and(|fr| fr.hits.contains(&Hit { rect: r, action: a })))
-                    .filter(|&(a, r)| {
-                        row_wide(&t, r)
-                            && !matches!(
-                                a,
-                                Action::Open(Screen::About)
-                                    | Action::Confirm(_)
-                                    | Action::TypeInto(_)
-                                    | Action::HomePick(_)
-                                    | Action::HomePlace(_)
-                            )
-                    })
+                    .filter(|&(a, r)| row_wide(&t, r) && !matches!(a, Action::Open(Screen::About) | Action::Confirm(_) | Action::TypeInto(_)))
                     .map(|(_, r)| r);
                 self.drag = match hit {
                     Some((Action::Slider(which), track)) => {

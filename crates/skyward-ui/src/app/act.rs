@@ -1037,6 +1037,12 @@ impl App {
                 }
             }
             // 删掉存储里的一份布局：页面上那一行右边的那枚是它。
+            Action::PartPage(by) => {
+                let page = self.state.part_page as i32 + by;
+                self.state.part_page = page.max(0) as usize;
+                self.refresh();
+                return Vec::new();
+            }
             Action::DeleteLayout(at) => {
                 if let Some(Ok(files)) = &self.state.layouts
                     && let Some(file) = files.get(at)
