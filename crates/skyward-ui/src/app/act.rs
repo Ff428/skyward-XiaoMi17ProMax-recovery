@@ -1041,6 +1041,10 @@ impl App {
                 let page = self.state.part_page as i32 + by;
                 self.state.part_page = page.max(0) as usize;
                 self.refresh();
+                // 翻页当成接着往下/往上滑：往后翻落到新一页的顶上，往前翻落到
+                // 它的底下，看着就是一直在滑，而不是跳一下（2026-11-28）。
+                let to = if by > 0 { 0.0 } else { self.max_scroll() };
+                self.seek_to(to, now);
                 return Vec::new();
             }
             Action::DeleteLayout(at) => {

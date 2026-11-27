@@ -62,6 +62,20 @@ impl App {
                         return Vec::new();
                     }
                     self.drag_at = Some(now);
+                    // 拖到屏幕上下那一条边上，页面自己跟着滚：不然排序页三屏
+                    // 长，往上根本拖不到「单独放在首页」那一段（2026-11-28）。
+                    let theme = self.theme();
+                    let edge = theme.m.dp(90.0);
+                    let step = theme.m.row_h / 2.0;
+                    let floor = self.h as f32;
+                    if y < edge {
+                        let at = (self.top().1 - step).max(0.0);
+                        self.top_mut().1 = at;
+                    } else if y > floor - edge {
+                        let most = self.max_scroll();
+                        let at = (self.top().1 + step).min(most);
+                        self.top_mut().1 = at;
+                    }
                     let page_y = y + self.top().1;
                     // 拎着的那一条整行（图标、文字、热区）跟着手指走。
                     self.state.home_drag = Some((drag.entry, page_y - drag.row_h / 2.0));

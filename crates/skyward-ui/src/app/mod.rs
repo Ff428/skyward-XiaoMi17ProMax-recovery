@@ -2722,12 +2722,17 @@ impl App {
     }
 
     /// 拎到「单独放在首页」那一段：放进顶置的第一格。
+    ///
+    /// 不能走 `move_entry_to_row(.., 0)` —— 「顶置还是空的」时候整页第 0 行是
+    /// 第一栏的第一条，那样会落进那一栏，看着就像没生效（2026-11-28）。
     fn move_entry_to_top(&mut self, entry: Entry) -> bool {
         let (list, _) = self.order_place(entry);
         if list == OrderList::Top && self.state.home_top.first() == Some(&entry) {
             return false;
         }
-        self.move_entry_to_row(entry, 0)
+        detach(&mut self.state.home_sections, &mut self.state.home_top, &mut self.state.home_rest, entry);
+        self.state.home_top.insert(0, entry);
+        true
     }
 
     /// 把拎着的那一条挪到整页的第 `flat` 行：那一行在哪一栏就进哪一栏，
