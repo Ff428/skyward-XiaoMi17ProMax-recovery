@@ -1647,7 +1647,7 @@ enum OrderList {
 }
 
 /// 拖动时隔多久才算下一次（触摸比屏幕快，全接就掉帧）与震动冷却。
-const DRAG_STEP_MS: u64 = 16;
+const DRAG_STEP_MS: u64 = 28;
 const HAPTIC_STEP_MS: u64 = 80;
 
 /// 手指拎着的一条：哪一条，整页第一行的顶与行距，整页一共几行。行高一样，
@@ -2425,8 +2425,9 @@ impl App {
         }
         // 分区翻页：那一屏从上下滑到位（2026-11-28）。
         if let Some(slide) = self.state.part_slide {
-            let next = slide * 0.55;
-            self.state.part_slide = if next.abs() < 6.0 { None } else { Some(next) };
+            // 0.82 一帧：一屏高约三十帧滑到位，起手不跳、收尾不急（2026-11-28）。
+            let next = slide * 0.82;
+            self.state.part_slide = if next.abs() < 2.0 { None } else { Some(next) };
             self.refresh();
         }
         // 那一栏滑回自己的位置：每帧收一半，收到看不清就停（2026-11-28）。
@@ -2727,8 +2728,8 @@ impl App {
     /// 不能走 `move_entry_to_row(.., 0)` —— 「顶置还是空的」时候整页第 0 行是
     /// 第一栏的第一条，那样会落进那一栏，看着就像没生效（2026-11-28）。
     fn move_entry_to_top(&mut self, entry: Entry) -> bool {
-        let (list, _) = self.order_place(entry);
-        if list == OrderList::Top && self.state.home_top.first() == Some(&entry) {
+        let (list, at) = self.order_place(entry);
+        if list == OrderList::Top && at == 0 {
             return false;
         }
         detach(&mut self.state.home_sections, &mut self.state.home_top, &mut self.state.home_rest, entry);

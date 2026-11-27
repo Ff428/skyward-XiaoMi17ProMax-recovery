@@ -82,8 +82,11 @@ impl App {
                         self.top_mut().1 = at;
                     }
                     let page_y = y + at;
-                    // 拎着的那一条整行（图标、文字、热区）跟着手指走。
-                    self.state.home_drag = Some((drag.entry, page_y - drag.row_h / 2.0));
+                    // 拎着的那一条整行（图标、文字、热区）跟着手指走；到了列表
+                    // 上下头就停住，别让它在边上一直动、一直重画（2026-11-28）。
+                    let last = drag.first_y + (drag.total.saturating_sub(1)) as f32 * drag.row_h;
+                    let ghost = (page_y - drag.row_h / 2.0).clamp(drag.first_y, last.max(drag.first_y));
+                    self.state.home_drag = Some((drag.entry, ghost));
                     // 手指跑到第一行上面（「单独放在首页」那一段）就是放进顶置。
                     let moved = if page_y < drag.first_y {
                         self.move_entry_to_top(drag.entry)

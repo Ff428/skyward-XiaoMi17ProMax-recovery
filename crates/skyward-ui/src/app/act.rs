@@ -1038,8 +1038,18 @@ impl App {
             }
             // 删掉存储里的一份布局：页面上那一行右边的那枚是它。
             Action::PartPage(by) => {
-                let page = self.state.part_page as i32 + by;
-                self.state.part_page = page.max(0) as usize;
+                // 最后那一页再点「下一页」不能再涨页码：涨了以后要连点四下
+                // 「上一页」才回得去（2026-11-28 用户实测）。
+                let per = 30usize;
+                let pages = match &self.state.partitions {
+                    Some(Ok(rows)) => rows.len().div_ceil(per).max(1),
+                    _ => 1,
+                };
+                let page = (self.state.part_page as i32 + by).clamp(0, pages as i32 - 1);
+                if page as usize == self.state.part_page {
+                    return Vec::new();
+                }
+                self.state.part_page = page as usize;
                 // 新一页从下面/上面滑进来，收到 0：往后翻从下方进，往前翻从上方进。
                 let tall = self.theme().m.h as f32;
                 self.state.part_slide = Some(if by > 0 { tall } else { -tall });
