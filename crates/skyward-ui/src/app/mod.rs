@@ -1741,6 +1741,8 @@ pub struct App {
     shade_drag: Option<TileDrag>,
     /// 排序页拖动：上一次真的受理的时刻、上一次震动的时刻（2026-11-28）。
     drag_at: Option<u64>,
+    /// 拖动时手指最后落在屏幕的哪一行上（松手时用它放）。
+    drag_y: f32,
     haptic_at: Option<u64>,
     /// When to take the screenshot a tile asked for, once the page under the
     /// sheet has been drawn without it.
@@ -1942,6 +1944,7 @@ impl App {
             shade_editing: false,
             shade_drag: None,
             drag_at: None,
+            drag_y: 0.0,
             haptic_at: None,
             shot_when: None,
             frame: None,
@@ -2721,6 +2724,19 @@ impl App {
             OrderList::Section(i) => self.state.home_sections.get(i)?.entries.get(at).copied(),
             OrderList::Rest => self.state.home_rest.get(at).copied(),
         }
+    }
+
+    /// 手指在 `y`（屏幕坐标）这一处，把拎着的那一条放到它该去的地方：跑到第一
+    /// 行上面就是顶置，否则落到那一行所在的栏。松手时也调它一遍 —— 最后一个
+    /// Move 可能被节流丢掉，落下时用的是上一次的位置（2026-11-28）。
+    fn settle_drag(&mut self, drag: EntryDrag, y: f32) -> bool {
+        let page_y = y + self.top().1;
+        if page_y < drag.first_y {
+            return self.move_entry_to_top(drag.entry);
+        }
+        let span = drag.total.max(1) as f32;
+        let at = (((page_y - drag.first_y) / drag.row_h).floor()).clamp(0.0, span - 1.0) as usize;
+        self.move_entry_to_row(drag.entry, at)
     }
 
     /// 拎到「单独放在首页」那一段：放进顶置的第一格。

@@ -56,8 +56,10 @@ impl App {
         if let Drag::EntryDrag(drag) = self.drag {
             return match ev {
                 Touch::Move(_, y) => {
+                    // 位置每次都记（便宜），重画才节流：松手时要用最后这个位置。
+                    self.drag_y = y;
                     // 触摸来得比屏幕快：一条手指能一秒来一两百个 Move，每个都
-                    // 重排 + 整页重画就掉帧。12 ms 内只认第一个（2026-11-28）。
+                    // 重排 + 整页重画就掉帧。
                     if self.drag_at.is_some_and(|at| now.saturating_sub(at) < DRAG_STEP_MS) {
                         return Vec::new();
                     }
@@ -88,13 +90,7 @@ impl App {
                     let ghost = (page_y - drag.row_h / 2.0).clamp(drag.first_y, last.max(drag.first_y));
                     self.state.home_drag = Some((drag.entry, ghost));
                     // 手指跑到第一行上面（「单独放在首页」那一段）就是放进顶置。
-                    let moved = if page_y < drag.first_y {
-                        self.move_entry_to_top(drag.entry)
-                    } else {
-                        let span = drag.total.max(1) as f32;
-                        let at = (((page_y - drag.first_y) / drag.row_h).floor()).clamp(0.0, span - 1.0) as usize;
-                        self.move_entry_to_row(drag.entry, at)
-                    };
+                    let moved = self.settle_drag(drag, y);
                     if moved {
                         self.state.home_pick = None;
                         self.row_press = None;
@@ -119,7 +115,27 @@ impl App {
                         Vec::new()
                     }
                 }
-                Touch::Up | Touch::Down(..) => {
+                Touch::Up => {
+                    // 松手按最后那一点放一次：最后一个 Move 可能被节流吞掉，
+                    // 不放这一下就会停在上一格（2026-11-28 用户报的「拖到最上面
+                    // 松手没进去」）。
+                    let mut moved = self.settle_drag(drag, self.drag_y);
+                    self.drag = Drag::Idle;
+                    self.drag_at = None;
+                    self.haptic_at = None;
+                    self.state.home_drag = None;
+                    self.row_press = None;
+                    self.row_art = None;
+                    self.state.home_pick = None;
+                    self.refresh();
+                    if moved {
+                        moved = false;
+                        vec![Effect::Haptic]
+                    } else {
+                        Vec::new()
+                    }
+                }
+                Touch::Down(..) => {
                     self.drag = Drag::Idle;
                     self.drag_at = None;
                     self.haptic_at = None;

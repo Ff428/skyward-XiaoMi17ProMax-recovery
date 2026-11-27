@@ -2177,6 +2177,65 @@ mod tests {
     use super::*;
     use crate::app::testing::*;
 
+    /// 分区翻到最后一页以后，「下一页」不能再往上加页码 —— 加了以后要连点
+    /// 好几下「上一页」才回得去（2026-11-28 用户实测的）。
+    #[test]
+    fn the_last_partition_page_does_not_roll_further() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Partitions, &f, &i);
+        let rows: Vec<(String, u64)> = (0..61).map(|k| (format!("part{k}"), 1024)).collect();
+        app.state.partitions = Some(Ok(rows));
+        app.state.part_page = 2; // 61 条 30 一页 = 3 页，最后一页是 2（从 0 数）
+        app.act(Action::PartPage(1), 0);
+        assert_eq!(app.state.part_page, 2, "最后一页再点下一页，页码不动");
+        app.act(Action::PartPage(-1), 0);
+        assert_eq!(app.state.part_page, 1, "点一下上一页回到第 2 页");
+        app.state.part_page = 0;
+        app.act(Action::PartPage(-1), 0);
+        assert_eq!(app.state.part_page, 0, "第一页再点上一页也不动");
+    }
+
+    /// 从「其他」里长按拎一条拖到最上面（「单独放在首页」那一段），松手它
+    /// 就该在顶置里，而不是掉进第一栏（2026-11-28 用户报的那条）。
+    #[test]
+    fn dragging_an_entry_onto_the_top_zone_puts_it_there() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::HomeOrder, &f, &i);
+        app.materialize_home();
+        let entry = Entry::Tasks;
+        let at = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::HomePick(entry)).map(|h| h.rect).expect("任务那一行");
+        let (x, y) = at.centre();
+        app.touch(Touch::Down(x, y), &f, 0);
+        app.tick(600);
+        // 拖到第一行上面：那里是「单独放在首页」那一段。
+        // 拖到第一行上面去（「单独放在首页」那一段）。
+        let first = app.frame(&f, &i).hits.iter().filter(|h| matches!(h.action, Action::HomePick(_))).map(|h| h.rect.y).fold(f32::MAX, f32::min);
+        app.touch(Touch::Move(x, first - at.h * 0.5), &f, 700);
+        app.touch(Touch::Up, &f, 800);
+        assert_eq!(app.state.home_top.first(), Some(&entry), "拎到最上面就进顶置");
+        assert!(!app.state.home_rest.contains(&entry), "不再留在「其他」里");
+    }
+
+    /// 长按往下一格：它和下一行换位置。
+    #[test]
+    fn dragging_down_swaps_with_the_row_below() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::HomeOrder, &f, &i);
+        app.materialize_home();
+        let rest = app.state.home_rest.clone();
+        let entry = rest[0];
+        let below = rest[1];
+        let at = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::HomePick(entry)).map(|h| h.rect).expect("第一行");
+        let (x, y) = at.centre();
+        app.touch(Touch::Down(x, y), &f, 0);
+        app.tick(600);
+        app.touch(Touch::Move(x, y + at.h * 1.2), &f, 700);
+        app.touch(Touch::Up, &f, 800);
+        let rest = &app.state.home_rest;
+        let (a, b) = (rest.iter().position(|e| *e == entry).unwrap(), rest.iter().position(|e| *e == below).unwrap());
+        assert!(a > b, "往下拖一格，它就排到原来下面那条的后面");
+    }
+
     #[test]
     fn search_finds_by_pinyin_typed_on_its_own_keyboard() {
         let (f, i) = (fonts(), info());
@@ -2271,17 +2330,22 @@ mod tests {
         app.state.home_top.len() + app.state.home_rest.len() + app.state.home_sections.iter().map(|s| s.entries.len()).sum::<usize>()
     }
 
+    /// 「其他」里那条「任务」画出来没有（它只出现在出厂的「其他」里）。
+    fn rest_rows(app: &mut App, f: &crate::font::Fonts, i: &skyward_info::DeviceInfo) -> usize {
+        app.frame(f, i).hits.iter().filter(|h| h.action == Entry::Tasks.action()).count()
+    }
+
     #[test]
     fn the_others_section_folds_and_unfolds_from_its_heading() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Home, &f, &i);
-        assert_eq!(files_rows(&mut app, &f, &i), 1, "「其他」展开着，文件管理那一行在");
+        assert!(rest_rows(&mut app, &f, &i) > 0, "「其他」展开着，那几条都在");
         tap(&mut app, &f, &i, Action::HomeFoldRest);
         assert!(app.state.home_rest_collapsed, "折起来了");
-        assert_eq!(files_rows(&mut app, &f, &i), 0, "折起来就只剩栏名");
+        assert_eq!(rest_rows(&mut app, &f, &i), 0, "折起来就只剩栏名");
         tap(&mut app, &f, &i, Action::HomeFoldRest);
         assert!(!app.state.home_rest_collapsed);
-        assert_eq!(files_rows(&mut app, &f, &i), 1, "再点一下又摊开");
+        assert!(rest_rows(&mut app, &f, &i) > 0, "再点一下又摊开");
     }
 
     #[test]
@@ -2290,7 +2354,7 @@ mod tests {
         let mut app = opened(Screen::HomeOrder, &f, &i);
         // 第一次用：内置的「刷机与备份」只在显示层，动一下才落进 state。
         tap(&mut app, &f, &i, Action::HomePick(Entry::Files));
-        assert_eq!(app.state.home_sections.len(), 1, "内置那一栏落进了 state");
+        assert_eq!(app.state.home_sections.len(), 4, "出厂那四栏落进了 state");
         assert!(!app.state.home_rest.contains(&Entry::Install), "落进去的条目不再留在「其他」");
         tap(&mut app, &f, &i, Action::HomeNewSection);
         assert_eq!(app.screen(), Screen::HomeSection, "新建一栏先给它起名字");
@@ -2318,9 +2382,10 @@ mod tests {
         tap(&mut app, &f, &i, Action::HomePick(Entry::Files));
         assert_eq!(app.state.home_pick, Some(Entry::Files));
         tap(&mut app, &f, &i, Action::HomePlace(Entry::Wlan));
-        let rest = &app.state.home_rest;
-        let at_files = rest.iter().position(|e| *e == Entry::Files).unwrap();
-        let at_wlan = rest.iter().position(|e| *e == Entry::Wlan).unwrap();
+        // 无线网络在顶置，所以文件管理也落在顶置，就在它前面一格。
+        let top = &app.state.home_top;
+        let at_files = top.iter().position(|e| *e == Entry::Files).expect("文件管理在顶置");
+        let at_wlan = top.iter().position(|e| *e == Entry::Wlan).expect("无线网络在顶置");
         assert_eq!(at_files + 1, at_wlan, "文件管理落在无线网络前面一格");
         assert!(app.state.home_pick.is_none(), "放下以后不再拎着");
         assert_eq!(held_entries(&app), crate::app::default_rest().len(), "拎来拎去不会把条目弄丢");
