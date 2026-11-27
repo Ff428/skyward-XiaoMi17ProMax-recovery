@@ -464,7 +464,8 @@ mod tests {
     #[test]
     fn the_file_transfer_switch_has_the_runtime_follow_it() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Settings, W, H, PPD);
+        // 文件传输搬进了自己的页，开关在那页上（2026-11-28）。
+        let mut app = App::new(Screen::FileTransfer, W, H, PPD);
         assert!(app.state.file_transfer, "on until turned off");
         let (_, y) = spot(&mut app, &f, &i, Action::Toggle(Switch::FileTransfer));
         if y > H as f32 * 0.9 {
@@ -534,7 +535,7 @@ mod tests {
         assert_eq!(app.frame(&f, &i).title, "語言");
         tap_back(&mut app, &f, &i, 0);
         app.tick(1000);
-        assert_eq!((app.screen(), app.frame(&f, &i).title), (Screen::Settings, "選項設定"), "and so does the page gone back to");
+        assert_eq!((app.screen(), app.frame(&f, &i).title.to_string()), (Screen::Settings, "選項設定".to_string()), "and so does the page gone back to");
         app.set_mounts(Ok(vec![MountRow { base: "odm".into(), point: "/odm".into(), mounted: true, holders: vec!["qseecomd".into()] }]));
         tap(&mut app, &f, &i, Action::Open(Screen::Language));
         tap(&mut app, &f, &i, Action::Language(Lang::En));
@@ -542,8 +543,8 @@ mod tests {
         app.tick(2000);
         tap_back(&mut app, &f, &i, 2000);
         app.tick(3000);
-        // The mount page is on the advanced page now.
-        tap(&mut app, &f, &i, Action::Open(Screen::Advanced));
+        // The mount page is behind its own home entry now.
+        tap(&mut app, &f, &i, Action::Open(Screen::Settings));
         tap(&mut app, &f, &i, Action::Open(Screen::Mount));
         tap(&mut app, &f, &i, Action::Unavailable("A partition in use can't be unmounted"));
         assert_eq!(app.toast.as_ref().map(|t| t.0.as_str()), Some("A partition in use can't be unmounted"), "as do its messages");

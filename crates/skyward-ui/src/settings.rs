@@ -63,6 +63,50 @@ pub struct Settings {
     pub install: Install,
     pub backup: Backup,
     pub logs: Logs,
+    /// 自己建的首页分类；空着就是不分栏，全部落在「其他」。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_sections: Vec<HomeSection>,
+    /// 「其他」在首页折起来了，以及它的名字。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub home_rest_collapsed: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub home_rest_name: String,
+    /// 「其他」摆在分类之间的哪个位置；没有就是末尾。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_rest_at: Option<usize>,
+    /// 首页顶上那个大字；空着就是页面自带的那个。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub home_title: String,
+    /// 首页条目的自定义名字，按 `Entry::id()` 写；没有的用页面自带的名字。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub entry_names: std::collections::BTreeMap<String, String>,
+    /// 单独放在首页最上面的条目。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_top: Vec<String>,
+    /// 「其他」那一栏的顺序，按 `Entry::id()` 写。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_rest: Vec<String>,
+    /// 旧版的平铺顺序：只读，读到就搬进 `home_rest`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub home_order: Vec<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// 设置文件里的一栏：名字与条目 id。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HomeSection {
+    pub name: String,
+    pub entries: Vec<String>,
+    /// 栏目图标，按 `Icon::id()` 写；空的按 Layers 处理。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
+    /// 在首页折起来了。
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 /// The install page's options.
@@ -154,6 +198,28 @@ impl Settings {
                 verify: state.verify,
             },
             logs: Logs { kinds: names(&state.logs, &LOGS), to: LOG_PLACES[state.logs_to].to_string() },
+            home_sections: state
+                .home_sections
+                .iter()
+                .map(|section| HomeSection {
+                    name: section.name.clone(),
+                    entries: section.entries.iter().map(|entry| entry.id().to_string()).collect(),
+                    icon: section.icon.id().to_string(),
+                    collapsed: section.collapsed,
+                })
+                .collect(),
+            home_title: state.home_title.clone(),
+            entry_names: state.entry_names.clone(),
+            home_rest_at: state.home_rest_at.filter(|at| *at < state.home_sections.len()),
+            home_rest_collapsed: state.home_rest_collapsed,
+            home_rest_name: state.home_rest_name.clone(),
+            home_top: state.home_top.iter().map(|entry| entry.id().to_string()).collect(),
+            home_rest: if state.home_sections.is_empty() && state.home_top.is_empty() && crate::app::rest_is_default(&state.home_rest) {
+                Vec::new()
+            } else {
+                state.home_rest.iter().map(|entry| entry.id().to_string()).collect()
+            },
+            home_order: Vec::new(),
         }
     }
 
@@ -227,6 +293,33 @@ impl Settings {
         if let Some(at) = LOG_PLACES.iter().position(|place| *place == self.logs.to) {
             state.logs_to = at;
         }
+        // 首页分栏：文件里有就用它，没有就全落在「其他」；旧版的平铺顺序
+        // 搬进「其他」。
+        let mut sections: Vec<crate::app::Section> = self
+            .home_sections
+            .iter()
+            .map(|section| crate::app::Section {
+                name: section.name.clone(),
+                entries: section.entries.iter().filter_map(|id| crate::app::Entry::from_id(id)).collect(),
+                icon: crate::icons::Icon::from_id(&section.icon).unwrap_or(crate::icons::Icon::Layers),
+                collapsed: section.collapsed,
+            })
+            .collect();
+        let flat = if self.home_rest.is_empty() { &self.home_order } else { &self.home_rest };
+        let mut top: Vec<crate::app::Entry> = self.home_top.iter().filter_map(|id| crate::app::Entry::from_id(id)).collect();
+        let mut rest: Vec<crate::app::Entry> = flat.iter().filter_map(|id| crate::app::Entry::from_id(id)).collect();
+        if sections.is_empty() && top.is_empty() && rest.is_empty() {
+            rest = crate::app::DEFAULT_ORDER.to_vec();
+        }
+        crate::app::normalize(&mut sections, &mut top, &mut rest);
+        state.home_sections = sections;
+        state.home_top = top;
+        state.home_rest = rest;
+        state.home_rest_collapsed = self.home_rest_collapsed;
+        state.home_rest_name = self.home_rest_name.clone();
+        state.home_title = self.home_title.clone();
+        state.entry_names = self.entry_names.clone();
+        state.home_rest_at = self.home_rest_at.filter(|at| *at <= state.home_sections.len());
     }
 }
 
@@ -375,7 +468,12 @@ mod tests {
         let mut state = State::default();
         kept.apply(&mut state);
         assert!(state.dark && state.compress);
-        assert_eq!(Settings::of(&state), Settings { dark: true, backup: Backup { compress: true, ..Backup::default() }, ..Settings::default() });
+        // 首页「其他」默认就有内容（含高级页搬过来的那些），这里只比文件里
+        // 真正写下的那几项。
+        let back = Settings::of(&state);
+        assert_eq!((back.dark, back.backup.compress), (true, true));
+        assert!(back.home_sections.is_empty() && back.home_top.is_empty(), "分栏没动就不写");
+        assert!(back.home_rest.is_empty(), "「其他」还是默认就不写");
         assert!(!state.language_chosen);
         assert!(Settings::read("dark = true").is_err(), "not JSON");
     }

@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn the_menu_comes_back_to_itself_from_any_page_the_lock_held_it_off() {
         // 分区打开了、没有锁要答：不论此刻停在哪一页，主页都是该在的那页。
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         app.data_waiting(None);
         app.show_menu();
         assert_eq!((app.screen(), app.stack.len()), (Screen::Home, 1), "the menu, with nothing behind it");
@@ -393,7 +393,7 @@ mod tests {
     fn the_decrypt_page_opens_the_partition_and_then_asks_with_the_users_own_control() {
         let (f, i) = (fonts(), info());
         // The decrypt page is on the advanced page now.
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         assert_eq!(tap(&mut app, &f, &i, Action::Open(Screen::Decrypt)), vec![Effect::OpenData], "no swipe first");
         assert_eq!(app.state.data, Data::Opening);
         assert!(!keys_shown(&mut app, &f, &i) && app.frame(&f, &i).pattern.is_none(), "nothing to answer yet");

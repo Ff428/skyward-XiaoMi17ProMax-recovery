@@ -9,7 +9,117 @@ CI 发布的 `<tag>-release-notes.md` 就是这份文件。
 
 ---
 
-# 未发布 · Root 管理（移植自 skyward-pudding v0.5.9）
+# 0.8.0 · 首页自己编排、布局备份（移植自 skyward-pudding v0.5.13）
+
+v0.5.13 六件事，逐条落在本仓库的树上。做法和上一版一样：**读上游怎么写的，按我们
+自己的结构重写**，不是把上游的补丁打上来——我们的首页早就不是一张写死的行表了
+（`Tasks` / `Record` / `Mount` / `Filesystems` / `Shutdown` 这几条上游没有），
+`Frame.title` 我们还是 `Cow`，键盘那套也多一个 `chinese` 参数。
+
+## 一、首页可以自建分类、任意排序，「其他」也能挪
+
+新增 `crates/skyward-ui/src/app/home.rs`：
+
+| 名字 | 是什么 |
+|---|---|
+| `Entry` | 27 个首页条目，`id` / `name` / `action` / `screen` / `icon` |
+| `Section` | 一栏：`name` / `entries` / `icon` / `collapsed` |
+| `default_sections` | 首次开机那四栏（系统与安装 / 数据与安全 / 外设与界面 / 关于） |
+| `default_rest` | 「其他」里剩下的 |
+| `normalize()` | 把「顶置 + 各栏 + 其他」过一遍，不重不漏 |
+| `section_of` / `detach` | 找某条目在哪一栏 / 从原处摘掉 |
+| `rest_is_default()` | 「其他」还是不是出厂那一套 |
+
+`normalize()` 是这一版的核心：所有改动（挪进栏、挪出栏、删栏、改名、导入布局）
+最后都过它一遍再落进 state。条目只会被移动，不会消失——「其他」被拖走、
+某一栏被删掉，里面的条目回「其他」，不会跟着栏一起没。
+
+上一版的 `Screen::Advanced` 整页拿掉了：它那 17 条现在是首页条目（`home::ADVANCED`），
+页面本身、`Tile::Advanced`、搜索里那条 `Advanced` 全部删除。
+
+## 二、分类、条目、「其他」、首页大字都能改名，搜索认新名字
+
+- 条目：`Screen::EntryName`，写进 `state.entry_names`（`BTreeMap<id, 名字>`）。
+- 分类 / 「其他」：`Screen::HomeSection`，写进 `Section::name` / `state.home_rest_name`。
+- 首页大字：`Screen::HomeTitle`，写进 `state.home_title`，`Frame.title` 跟着换。
+- 搜索：`search::find(query, l, names)` 把内置那 27 条先套一遍 `names` 再建索引，
+  搜新名字能搜到，搜旧名字搜不到（除非新名字就是旧的）。`search::home_name()`
+  给「这条在首页上叫什么」用。
+
+## 三、布局备份：导出到任意目录，从任意 .json 导入
+
+新增 `crates/skyward-ui/src/layout.rs`：
+
+```json
+{ "kind": "skyward-layout", "version": 1,
+  "home_title": "…", "home_sections": [...], "home_top": [...],
+  "home_rest": [...], "home_rest_name": "…", "home_rest_at": 2,
+  "home_rest_collapsed": false, "entry_names": {...}, "tiles": [...] }
+```
+
+- 导出：`Effect::ExportLayout` → `/sdcard/Skyward/layout-<stamp>.json`，
+  或者 `ExportLayoutTo{path}` 写到你挑的目录（`Screen::LayoutBrowse` 里挑）。
+- 导入：`Screen::LayoutBrowse` 列 `layout-*.json`（`Effect::ReadLayouts`），
+  点一行 → `Effect::ImportLayout{path}` → `Layout::apply(&mut state)`。
+- `kind` 不对、`version` 不认识就当没读，不动现在的首页。
+
+挑位置那一页复用的是文件管理那套 `Effect::ReadDir`，但页面读的是 `state.layout_dir`
+而不是 `state.files`——所以 `App::set_files()` 现在按当前页分派：在
+`Screen::LayoutBrowse` 上列出来的东西落进 `layout_dir`，别处还是落进 `files`。
+
+## 四、文件传输点进独立页，开关状态说真话
+
+`Screen::FileTransfer` 从设置页里独立出来（设置页那段删掉）。开关不再只是记住
+「上次点了什么」，两个地方让它对上事实：
+
+- `skyward/src/ui.rs` 的 `offer_storage()` 每次先把 `state.transfer_running`
+  写成 `self.transfer.is_some()`，不一致就 `refresh()`。
+- 页面上的「现在」按 `(transfer_running, data.storage_open())` 三种情况分别说实话：
+  没开 / 开着但没连 / 连着。
+
+`file_transfer()` 里原来的 `unreachable!` 改成纠偏：以实际跑着的服务为准，并
+kmsg 记一行——开关被外部关掉时不再整页 panic。
+
+## 五、磁贴：删「高级工具」，补新的，按开关与页面分两组
+
+- `Tile::Advanced` 删除（它只有进那个已删页面一个用途）。
+- 补 5 枚：`Decrypt` 解密数据、`SkywardUpdate` 版本更新、`Relabel` 文件标签、
+  `HomeOrder` 首页排序、`Layout` 布局备份。`TILES` 30 → **34**。
+- 上游这一步是「补八枚」，其中 `Serve` / `Avb` / `Update` 我们早就有了，
+  `Charge` 本仓库没有充电那套，所以实际补 5 枚——功能对齐，枚数按我们的家底算。
+  `Tile::left()` 现在是公开函数，「还剩下哪些能加」只在一处算。
+- 「添加磁贴」面板按 `screen().is_none()`（开关与动作）/ `is_some()`（页面）
+  分两段，每段 7 列，段与段之间多留一行标题的高度。编辑态的画布高度改由
+  `candidate_height()` 现算，不跟着两段之间的空隙一起缩。
+
+## 六、名字页点输入框闪退
+
+根因在 `Action::TypeInto`：切字段时无条件 `self.refresh()`，而输入框的重绘路径
+会回来再读一次 `adding`，切到一半的字段让那一页以为自己不在编辑态。现在只在
+`a.field != field` 真的变了才刷新：
+
+```rust
+if let Some(a) = self.state.adding.as_mut()
+    && a.field != field
+{
+    a.field = field;
+    self.refresh();
+}
+```
+
+新加的 `Screen::HomeSection` / `Screen::EntryName` / `Screen::HomeTitle` 三页
+共用这套输入框，`Cap::Enter` 各自收口到 `HomeSectionDone` / `EntryNameDone` /
+`HomeTitleDone`。
+
+## 验证
+
+- `cargo check --target aarch64-linux-android -p skyward-ui --tests -p skyward` 通过。
+- 新增单测：`app/home.rs` 5 条（归一、摘取、出厂判定……）、`layout.rs` 3 条
+  （往返、坏 JSON、版本不认）、`app/act.rs` 7 条（其他栏折叠、建栏删栏、
+  拖动落点、名字页不闪退、首页大字、布局写读覆盖、挑位置页的目录）。
+- 两版镜像重新出过，`sha256` 见 `output/SHA256SUMS`。
+
+# 0.7.0 · Root 管理（移植自 skyward-pudding v0.5.9）
 
 把 mariusarva/skyward-pudding v0.5.9 的 Root 管理搬到本仓库。两边的树同源
 （都从 kirklin/skyward v0.5.0 分出来），所以是「新增一个 crate + 两个页面 + 接线」，

@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(app.screen(), Screen::Home);
         // The decrypt page is on the advanced page now: the screen lock is
         // asked for as soon as it opens.
-        let mut on = App::new(Screen::Advanced, W, H, PPD);
+        let mut on = App::new(Screen::Home, W, H, PPD);
         on.state.data = Data::Locked { user: 0, keys: Keys::Digits, checking: false };
         assert!(tap(&mut on, &f, &i, Action::Open(Screen::Decrypt)).is_empty(), "the screen lock is asked for at once");
         assert_eq!(on.screen(), Screen::Decrypt);
@@ -274,7 +274,7 @@ mod tests {
         assert_eq!(tap_at(&mut app, &f, &i, Action::Dismiss, 1000), vec![Effect::Dismiss]);
         // The decrypt page is opened from the advanced page, which is where
         // the row is; what the page says of itself is that nothing opens.
-        let mut on = App::new(Screen::Advanced, W, H, PPD);
+        let mut on = App::new(Screen::Home, W, H, PPD);
         on.state.data = Data::Erased;
         assert!(tap(&mut on, &f, &i, Action::Open(Screen::Decrypt)).is_empty(), "nothing opens until the system makes it afresh");
         assert_eq!(on.screen(), Screen::Decrypt);

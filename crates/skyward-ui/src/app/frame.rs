@@ -15,7 +15,8 @@ pub struct Hit {
 pub struct Frame {
     pub canvas: Canvas,
     pub hits: Vec<Hit>,
-    pub title: &'static str,
+    /// 页面顶上那个大字：页面自带的，或者主人给首页起的名字（2026-11-28）。
+    pub title: std::borrow::Cow<'static, str>,
     pub back: bool,
     /// The page opens with its title in large type, scrolling away with it.
     pub header: bool,
@@ -205,11 +206,17 @@ pub struct HeroArt {
 impl Frame {
     /// A page of cards on the grey page colour that opens with its title in
     /// large type and goes back with `<`.
-    pub fn new(t: &Theme, canvas: Canvas, hits: Vec<Hit>, title: &'static str, content_top: f32) -> Frame {
+    pub fn new(
+        t: &Theme,
+        canvas: Canvas,
+        hits: Vec<Hit>,
+        title: impl Into<std::borrow::Cow<'static, str>>,
+        content_top: f32,
+    ) -> Frame {
         Frame {
             canvas,
             hits,
-            title,
+            title: title.into(),
             back: true,
             header: true,
             content_top,

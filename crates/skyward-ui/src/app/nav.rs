@@ -381,6 +381,10 @@ impl App {
                 self.state.module_page = 0;
                 vec![Effect::ReadModules]
             }
+            // 布局备份：进来读一次存储里有哪些布局文件。
+            Screen::Layout => vec![Effect::ReadLayouts],
+            // 挑位置那一页：进来先列一次当前目录。
+            Screen::LayoutBrowse => vec![Effect::ReadDir(self.state.layout_dir.path.clone())],
             Screen::Filesystems => vec![Effect::ReadFilesystems],
             Screen::Slot | Screen::Reboot => vec![Effect::ReadSlots],
             Screen::Systems => vec![Effect::ReadSystems],
@@ -466,7 +470,7 @@ mod tests {
         let (f, i) = (fonts(), info());
         // The mount page is on the advanced page now, so that is where the
         // slide starts from.
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
         let home = shot(&c);
@@ -491,7 +495,7 @@ mod tests {
         assert!((front as f32 / W as f32 - 0.728).abs() < 0.01, "about three quarters of the way in after 50 ms: {front}");
 
         tap_back(&mut app, &f, &i, 4000);
-        assert_eq!(app.screen(), Screen::Advanced, "back to the page it opened from");
+        assert_eq!(app.screen(), Screen::Settings, "back to the page it opened from");
         app.compose(&mut c, &f, &i, "12:00", 4000);
         let first = shot(&c);
         app.compose(&mut c, &f, &i, "12:00", 4060);
@@ -508,7 +512,7 @@ mod tests {
     #[test]
     fn a_page_sliding_has_its_leading_corners_rounded_as_the_screens_are() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         app.set_screen_corners(140.0);
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
@@ -530,7 +534,7 @@ mod tests {
     #[test]
     fn a_finger_brings_a_sliding_page_to_rest_and_a_page_never_shown_gives_way_at_once() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         let mut c = Canvas::new(W, H);
         app.compose(&mut c, &f, &i, "12:00", 0);
         tap_at(&mut app, &f, &i, Action::Open(Screen::Mount), 1000);
@@ -543,7 +547,7 @@ mod tests {
         // stands: what replaces it shows at once.
         app.refresh();
         tap_back(&mut app, &f, &i, 2000);
-        assert_eq!(app.screen(), Screen::Advanced, "back to the page it opened from");
+        assert_eq!(app.screen(), Screen::Settings, "back to the page it opened from");
         assert!(app.turn.is_none());
     }
 
@@ -553,10 +557,10 @@ mod tests {
         let routes: [(Screen, Screen); 11] = [
             (Screen::Home, Screen::Backup),
             (Screen::Home, Screen::Restore),
-            (Screen::Home, Screen::Advanced),
+            (Screen::Home, Screen::Settings),
             (Screen::Home, Screen::Files),
-            (Screen::Advanced, Screen::Terminal),
-            (Screen::Advanced, Screen::Logs),
+            (Screen::Settings, Screen::Terminal),
+            (Screen::Settings, Screen::Logs),
             (Screen::Settings, Screen::Language),
             (Screen::Settings, Screen::TimeZone),
             (Screen::About, Screen::Logs),

@@ -110,6 +110,8 @@ const TMP_LOGS: &str = "/skyward/run/logs";
 const STORAGE_LOGS: &str = "Skyward/logs";
 /// Where a system app's package goes when it is exported to internal storage.
 const STORAGE_APKS: &str = "Skyward/apps";
+/// 布局备份落在存储的哪儿：`/sdcard/Skyward`。
+const STORAGE_SKYWARD: &str = "Skyward";
 
 /// The folder of internal storage the system saves its own screenshots in,
 /// which the gallery shows as its screenshots, and where in the recovery
@@ -432,6 +434,34 @@ fn in_place(place: Place, path: &str) -> PathBuf {
 /// what update_engine wrote while it last installed an update and what the
 /// last install script wrote, and the kernel's. Each file is owned as a
 /// copy into the folder would be. Gives the folder.
+/// 把这一份布局写成存储里的一个文件，名字带写到它的那一刻。
+fn write_layout(layout: &skyward_ui::layout::Layout, into: &Path, zone: &TimeZone) -> Result<PathBuf> {
+    let there = into.ancestors().find(|p| p.exists()).context("the root is always there")?;
+    let ownership = ownership(there)?;
+    skyward_files::make_folders(into, ownership)?;
+    let path = into.join(format!("layout-{}.json", skyward_ui::fmt::stamp(unix_now()?, zone)));
+    let mut file = skyward_files::make_file(&path, ownership)?;
+    file.write_all(layout.to_json().as_bytes()).with_context(|| format!("write {}", path.display()))?;
+    file.sync_all().with_context(|| format!("write {}", path.display()))?;
+    Ok(path)
+}
+
+/// 存储里的布局文件，新的在前。
+fn read_layouts(into: &Path) -> Result<Vec<skyward_ui::layout::File>> {
+    let mut out = Vec::new();
+    let Ok(dir) = fs::read_dir(into) else { return Ok(out) };
+    for entry in dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("layout-") || !name.ends_with(".json") {
+            continue;
+        }
+        let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        out.push(skyward_ui::layout::File { path: entry.path().display().to_string(), name, bytes });
+    }
+    out.sort_by(|a, b| b.name.cmp(&a.name));
+    Ok(out)
+}
+
 fn export_logs(recovery: bool, kernel: bool, into: &Path, zone: &TimeZone) -> Result<PathBuf> {
     let there = into.ancestors().find(|p| p.exists()).context("the root is always there")?;
     let ownership = ownership(there)?;
@@ -4322,6 +4352,12 @@ impl Pages<'_> {
     /// erasing or installing could take it away. File transfer that does
     /// not follow, or whose service ended, stops, and the page says why.
     fn offer_storage(&mut self, now: u64) -> Result<()> {
+        // 文件传输那一页的「现在」要说真话：服务在不在跑，只有这里知道。
+        let running = self.transfer.is_some();
+        if self.app.state.transfer_running != running {
+            self.app.state.transfer_running = running;
+            self.app.refresh();
+        }
         let kept = match &mut self.transfer {
             Some(t) if !t.service.running() => Err(anyhow!("the file transfer service ended")),
             Some(t) => {
@@ -4586,6 +4622,42 @@ impl Pages<'_> {
             Effect::Screenshot { storage } => {
                 let saved = save_screenshot(&self.screen, storage, self.app.state.zone()).map_err(|e| format!("{e:#}"));
                 self.app.screenshot_saved(saved, now);
+            }
+            // 布局：写出去、读回来、按文件改。
+            Effect::ExportLayout => {
+                let layout = skyward_ui::layout::Layout::of(&self.app.state);
+                let into = Path::new(skyward_crypto::data::SDCARD).join(STORAGE_SKYWARD);
+                let outcome = write_layout(&layout, &into, self.app.state.zone())
+                    .map(|path| path.display().to_string())
+                    .map_err(|e| format!("{e:#}"));
+                self.app.layout_exported(outcome, now);
+                let listed = read_layouts(&into).map_err(|e| format!("{e:#}"));
+                self.app.layouts_listed(listed, now);
+            }
+            Effect::ExportLayoutTo { path } => {
+                let layout = skyward_ui::layout::Layout::of(&self.app.state);
+                let outcome = write_layout(&layout, Path::new(&path), self.app.state.zone())
+                    .map(|written| written.display().to_string())
+                    .map_err(|e| format!("{e:#}"));
+                self.app.layout_exported(outcome, now);
+                let into = Path::new(skyward_crypto::data::SDCARD).join(STORAGE_SKYWARD);
+                let listed = read_layouts(&into).map_err(|e| format!("{e:#}"));
+                self.app.layouts_listed(listed, now);
+            }
+            Effect::ReadLayouts => {
+                let into = Path::new(skyward_crypto::data::SDCARD).join(STORAGE_SKYWARD);
+                let listed = read_layouts(&into).map_err(|e| format!("{e:#}"));
+                self.app.layouts_listed(listed, now);
+            }
+            Effect::ImportLayout { path } => {
+                let outcome = (|| -> Result<()> {
+                    let text = fs::read_to_string(&path).with_context(|| format!("read {path}"))?;
+                    let layout = skyward_ui::layout::Layout::from_json(&text)?;
+                    layout.apply(&mut self.app.state);
+                    Ok(())
+                })()
+                .map_err(|e| format!("{e:#}"));
+                self.app.layout_imported(outcome, now);
             }
             Effect::Sideload => {
                 if self.may_install(now)? {
@@ -5671,7 +5743,16 @@ impl Pages<'_> {
                     self.app.report(&skyward_ui::fmt::transfer_left_on(self.app.state.lang, &format!("{e:#}")), now);
                 }
             }
-            (on, t) => unreachable!("the switch turned file transfer {on} while it was {}", t.is_some()),
+            // 页面上的开关与实际跑着的服务对不上：以实际为准纠偏，不让整个
+            // 恢复界面因为一次不同步的点击停掉（2026-11-28）。
+            (on, t) => {
+                skyward_sys::kmsg(&format!("file transfer asked {on} while it already was: nothing to do"))?;
+                let running = t.is_some();
+                if self.app.state.file_transfer != running {
+                    self.app.state.file_transfer = running;
+                    self.app.refresh();
+                }
+            }
         }
         Ok(())
     }

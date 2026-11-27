@@ -41,6 +41,7 @@ mod draw;
 mod entry;
 mod filesystem;
 mod frame;
+mod home;
 mod input;
 mod modules;
 pub mod dataapp;
@@ -75,6 +76,7 @@ pub use decrypt::*;
 pub use entry::*;
 pub use filesystem::*;
 pub use frame::*;
+pub use home::*;
 pub use install::*;
 pub use kernel_su::*;
 pub use manager::*;
@@ -126,8 +128,24 @@ pub enum Screen {
     RestoreBackup,
     /// Backing up or restoring under way, and how it ended.
     BackupJob,
-    /// Tools for the experienced: files, a terminal, the logs.
-    Advanced,
+    /// 首页排序：一条条拎起来换顺序（2026-11-28）。
+    HomeOrder,
+    /// 给分类起名字（新建或改名）。
+    HomeSection,
+    /// 给分类挑一个图标（全部图标里选）。
+    HomeIcon,
+    /// 给首页的某一条改名。
+    EntryName,
+    /// 改首页顶上那个大字。
+    HomeTitle,
+    /// 布局导出成文件、从文件导入。
+    Layout,
+    /// 挑布局的位置：导出时挑一个目录，导入时挑一个文件。
+    LayoutBrowse,
+    /// 某一栏自己的页面：栏里条目排序、往里移、移出去、改名删除。
+    HomeSectionView,
+    /// 文件传输：内部存储交给电脑的那一个开关（首页点进来）。
+    FileTransfer,
     /// The modules installed for the phone's own system (KernelSU's and
     /// Magisk's), and whether each is switched on.
     Modules,
@@ -606,6 +624,58 @@ pub enum Action {
     UpdateSkyward,
     /// Stop downloading the build.
     StopSkywardUpdate,
+    /// 首页排序页：拎起这一条（再点一次放下）。
+    HomePick(Entry),
+    /// 把拎着的那条放到这一条之前。
+    HomePlace(Entry),
+    /// 把拎着的那条放到某一栏的末尾：`None` 是「其他」。
+    HomeToSection(Option<usize>),
+    /// 把拎着的那条单独放到首页最上面（不进任何分类）。
+    HomeToTop,
+    /// 打开某一栏的二级页。
+    HomeOpenSection(usize),
+    /// 把「其他」里的这一条直接收进正在看的这一栏。
+    HomeAdopt(Entry),
+    /// 新建一栏（先起名字）。
+    HomeNewSection,
+    /// 改某一栏的名字，顺带能删它。
+    HomeEditSection(usize),
+    /// 改「其他」的名字（它不能删）。
+    HomeRenameRest,
+    /// 删掉某一栏，里面的条目回到「其他」。
+    HomeDeleteSection(usize),
+    /// 把某一栏往上/下挪一格。
+    HomeShiftSection { at: usize, up: bool },
+    /// 把「其他」在各栏之间往上/下挪一格：它不能删，只能挪。
+    HomeShiftRest { up: bool },
+    /// 折叠/展开某一栏；以及「其他」。
+    HomeFoldSection(usize),
+    HomeFoldRest,
+    /// 名字页的「完成」。
+    HomeSectionDone,
+    /// 给首页的某一条改名：进它自己的名字页。
+    EntryRename(Entry),
+    /// 名字页的「完成」，以及改回默认名字。
+    EntryNameDone,
+    EntryNameReset,
+    /// 改首页顶上那个大字。
+    EditHomeTitle,
+    HomeTitleDone,
+    /// 把现在这一份布局写成文件；以及从存储里第几个文件导入。
+    ExportLayout,
+    ImportLayout(usize),
+    /// 挑位置：进导出用的目录浏览、进导入用的文件浏览、上一层、进一层、
+    /// 就在这一层导出、导入这个文件。
+    LayoutBrowseExport,
+    LayoutBrowseImport,
+    LayoutUp,
+    LayoutEnter(usize),
+    LayoutExportHere,
+    LayoutPick(usize),
+    /// 挑中第几个图标（`icons::ALL` 的下标）。
+    HomePickIcon(usize),
+    /// 首页恢复默认（分类清空、条目回默认顺序）。
+    HomeReset,
     /// A control whose work is not wired up yet; touching it says so.
     Unavailable(&'static str),
 }
@@ -653,6 +723,12 @@ pub enum Effect {
     Screenshot { storage: bool },
     /// Offer internal storage to a computer over USB, or stop.
     FileTransfer(bool),
+    /// 把布局写进存储，读回存储里的布局，以及从某一条路径导入。
+    ExportLayout,
+    ReadLayouts,
+    ImportLayout { path: String },
+    /// 把布局写到指定的那个目录里。
+    ExportLayoutTo { path: String },
     /// Start receiving a package over USB.
     Sideload,
     /// Start installing the file at this path from the top of a place,
@@ -1448,9 +1524,9 @@ const SHADE_KEEPS: f32 = 0.36;
 /// 摆几枚由用户说了算，所以这高度按行数算，不再是个定数（2026-11-22）：
 /// 只摆四枚就只占一行，面板跟着收，底下不留一大片空。编辑时滑条下面还
 /// 多摆一段「添加磁贴」，`editing` 一起算进来。
-fn shade_height(t: &Theme, tiles: usize, editing: bool) -> f32 {
+fn shade_height(t: &Theme, tiles: &[Tile], editing: bool) -> f32 {
     let m = &t.m;
-    let rows = tiles.div_ceil(4);
+    let rows = tiles.len().div_ceil(4);
     // 一行：圆钮 54 + 名字 10 + 底下留 16；行与行之间再空 8。
     let tile_h = m.dp(54.0) + m.dp(10.0) + m.dp(16.0);
     let gap = m.dp(8.0);
@@ -1460,9 +1536,29 @@ fn shade_height(t: &Theme, tiles: usize, editing: bool) -> f32 {
     if !editing {
         return tall;
     }
-    // 编辑时滑条底下：一行标题 + 候选磁贴（一排六个），最后留一点空。
-    let add_rows = TILES.len().saturating_sub(tiles).div_ceil(6).max(1);
-    tall += m.dp(46.0) + add_rows as f32 * (m.dp(32.0) + m.dp(24.0)) + m.dp(22.0);
+    // 编辑时滑条底下：候选按「开关与动作」和「页面」分两段，每段一行标题，
+    // 段里一排七个（2026-11-28）。
+    let left = Tile::left(tiles);
+    tall += candidate_height(t, &left) + m.dp(22.0);
+    tall
+}
+
+/// 「添加磁贴」那一段占多高：没有候选时只有一句话，有候选时每段一行标题
+/// 加若干排小圆钮。
+fn candidate_height(t: &Theme, left: &[Tile]) -> f32 {
+    let m = &t.m;
+    if left.is_empty() {
+        return m.dp(36.0);
+    }
+    let pitch = m.dp(30.0) + m.dp(20.0);
+    let mut tall = 0.0;
+    for part in [true, false] {
+        let count = left.iter().filter(|tile| tile.screen().is_none() == part).count();
+        if count == 0 {
+            continue;
+        }
+        tall += m.dp(46.0) + count.div_ceil(7) as f32 * pitch - m.dp(6.0);
+    }
     tall
 }
 
@@ -1647,7 +1743,7 @@ pub struct App {
     /// The current page's large and bar titles, for their words and the
     /// theme, with their blurred versions as they are needed. A page can
     /// change its title in place, as work on files does once it ends.
-    titles: Option<((&'static str, bool), Blurs, Blurs)>,
+    titles: Option<((std::borrow::Cow<'static, str>, bool), Blurs, Blurs)>,
     /// The icon and words of the current page's folding search bar, for
     /// its words and the theme.
     search_words: Option<((&'static str, bool), Canvas)>,
@@ -1905,6 +2001,15 @@ impl App {
 
     pub fn screen(&self) -> Screen {
         self.top().0
+    }
+
+    /// 首页顶上那个大字：主人起过名字就用它，没起就是页面自带的。
+    pub fn home_title(&self) -> &str {
+        if self.state.home_title.is_empty() {
+            crate::pages::HOME_TITLE
+        } else {
+            &self.state.home_title
+        }
     }
 
     fn top(&self) -> &(Screen, f32, Focus) {

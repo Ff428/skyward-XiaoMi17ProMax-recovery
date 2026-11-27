@@ -53,7 +53,7 @@ mod tests {
     #[test]
     fn relabeling_starts_once_the_data_partition_is_open_and_its_page_follows_it() {
         let (f, i) = (fonts(), info());
-        let mut app = App::new(Screen::Advanced, W, H, PPD);
+        let mut app = App::new(Screen::Home, W, H, PPD);
         tap(&mut app, &f, &i, Action::Open(Screen::Relabel));
         assert_eq!(app.screen(), Screen::Relabel);
         assert!(swipe(&mut app, &f, &i, Confirm::Relabel).is_empty());
@@ -79,7 +79,7 @@ mod tests {
         assert_eq!((job.checked, job.total, job.changed, job.outcome), (12, 400, 3, Some(JobEnd::Stopped)));
         assert!(app.frame(&f, &i).back);
         tap_at(&mut app, &f, &i, Action::Back, 2000);
-        assert_eq!(app.screen(), Screen::Advanced);
+        assert_eq!(app.screen(), Screen::Home);
         assert_eq!(app.state.relabel, None);
     }
 }

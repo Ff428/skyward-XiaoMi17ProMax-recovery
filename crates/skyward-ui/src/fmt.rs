@@ -381,9 +381,9 @@ pub fn backup_refusal(l: Lang, r: &BackupRefusal, restore: bool) -> String {
             match state {
                 SnapshotState::Snapshotted | SnapshotState::Merging => tr!(
                     l,
-                    "更新合并完成前，暂不{what}。你可以在「高级 > 系统更新」中查看。",
-                    "更新合併完成前，暫不{what}。你可以在「進階 > 系統更新」中查看。",
-                    "{parts} aren't {what} until the update merges. You can see it in Advanced > System update."
+                    "更新合并完成前，暂不{what}。你可以在首页的「系统更新」里查看。",
+                    "更新合併完成前，暫不{what}。你可以在首頁的「系統更新」裡查看。",
+                    "{parts} aren't {what} until the update merges. You can see it on the home page, under System update."
                 ),
                 SnapshotState::MergeFailed => tr!(
                     l,
@@ -593,17 +593,17 @@ pub fn erase_stop(l: Lang, s: &EraseStop) -> (String, Option<String>) {
     match s {
         EraseStop::Update(Hold::Unconfirmed) => (
             said([
-                "当前槽位的系统更新尚未完成，暂无法清除。你可以在「高级 > 系统更新」中合并后重试。",
-                "目前槽位的系統更新尚未完成，暫時無法清除。你可以在「進階 > 系統更新」中合併後重試。",
-                "The current slot's system update hasn't finished, so nothing can be wiped yet. Merge it in Advanced > System update, then try again.",
+                "当前槽位的系统更新尚未完成，暂无法清除。你可以在首页的「系统更新」里合并后重试。",
+                "目前槽位的系統更新尚未完成，暫時無法清除。你可以在首頁的「系統更新」裡合併後重試。",
+                "The current slot's system update hasn't finished, so nothing can be wiped yet. Merge it under System update on the home page, then try again.",
             ]),
             None,
         ),
         EraseStop::Update(Hold::Merging) => (
             said([
-                "系统更新正在合并，暂无法清除。你可以在「高级 > 系统更新」中查看，合并完成后重试。",
-                "系統更新正在合併，暫時無法清除。你可以在「進階 > 系統更新」中查看，合併完成後重試。",
-                "A system update is merging, so nothing can be wiped yet. You can see it in Advanced > System update; try again once it has merged.",
+                "系统更新正在合并，暂无法清除。你可以在首页的「系统更新」里查看，合并完成后重试。",
+                "系統更新正在合併，暫時無法清除。你可以在首頁的「系統更新」裡查看，合併完成後重試。",
+                "A system update is merging, so nothing can be wiped yet. You can see it under System update on the home page; try again once it has merged.",
             ]),
             None,
         ),

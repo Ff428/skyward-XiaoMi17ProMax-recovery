@@ -787,7 +787,7 @@ impl App {
                 self.shade_last = None;
                 // A finger anywhere the sheet does not reach puts it away:
                 // the page under it was being touched, not the sheet.
-                let tall = shade_height(&t, self.state.tiles.len(), self.shade_editing);
+                let tall = shade_height(&t, &self.state.tiles, self.shade_editing);
                 let sheet = tall * self.shade;
                 if self.shade > 0.0 && y > sheet {
                     self.close_shade();
@@ -1008,7 +1008,7 @@ impl App {
     /// 面板拉下来的顶端在屏幕的哪儿；收着时在屏幕上方（负的）。
     pub(super) fn shade_top(&self) -> f32 {
         let t = self.theme();
-        let tall = shade_height(&t, self.state.tiles.len(), self.shade_editing);
+        let tall = shade_height(&t, &self.state.tiles, self.shade_editing);
         tall * self.shade - tall
     }
 

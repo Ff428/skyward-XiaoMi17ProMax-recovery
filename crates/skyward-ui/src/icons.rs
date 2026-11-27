@@ -77,6 +77,20 @@ pub enum Icon {
     Search,
 }
 
+/// 全部图标，按上面的顺序：给「选个图标」那页用。
+pub const ALL: [Icon; 27] = [Icon::Install, Icon::Backup, Icon::Restore, Icon::Mount, Icon::Wipe, Icon::Gear, Icon::Power, Icon::Globe, Icon::Clock, Icon::Terminal, Icon::Usb, Icon::UsbDrive, Icon::Layers, Icon::Phone, Icon::Lock, Icon::More, Icon::Folder, Icon::Log, Icon::Shield, Icon::Wlan, Icon::Battery, Icon::Systems, Icon::Record, Icon::Pencil, Icon::Sort, Icon::Choose, Icon::Search];
+
+impl Icon {
+    /// 写进设置文件用的短名字。
+    pub fn id(self) -> &'static str {
+        match self { Icon::Install => "install", Icon::Backup => "backup", Icon::Restore => "restore", Icon::Mount => "mount", Icon::Wipe => "wipe", Icon::Gear => "gear", Icon::Power => "power", Icon::Globe => "globe", Icon::Clock => "clock", Icon::Terminal => "terminal", Icon::Usb => "usb", Icon::UsbDrive => "usb_drive", Icon::Layers => "layers", Icon::Phone => "phone", Icon::Lock => "lock", Icon::More => "more", Icon::Folder => "folder", Icon::Log => "log", Icon::Shield => "shield", Icon::Wlan => "wlan", Icon::Battery => "battery", Icon::Systems => "systems", Icon::Record => "record", Icon::Pencil => "pencil", Icon::Sort => "sort", Icon::Choose => "choose", Icon::Search => "search", }
+    }
+
+    pub fn from_id(id: &str) -> Option<Icon> {
+        Some(match id { "install" => Icon::Install, "backup" => Icon::Backup, "restore" => Icon::Restore, "mount" => Icon::Mount, "wipe" => Icon::Wipe, "gear" => Icon::Gear, "power" => Icon::Power, "globe" => Icon::Globe, "clock" => Icon::Clock, "terminal" => Icon::Terminal, "usb" => Icon::Usb, "usb_drive" => Icon::UsbDrive, "layers" => Icon::Layers, "phone" => Icon::Phone, "lock" => Icon::Lock, "more" => Icon::More, "folder" => Icon::Folder, "log" => Icon::Log, "shield" => Icon::Shield, "wlan" => Icon::Wlan, "battery" => Icon::Battery, "systems" => Icon::Systems, "record" => Icon::Record, "pencil" => Icon::Pencil, "sort" => Icon::Sort, "choose" => Icon::Choose, "search" => Icon::Search, _ => return None })
+    }
+}
+
 /// The stock icons' box: every outline here is laid out in it.
 const BOX: f32 = 28.0;
 

@@ -23,7 +23,6 @@ const fn partition(name: &'static str, place: Text, screen: Screen) -> Entry {
 
 const HOME: Text = ["主页", "主頁", "Home"];
 const INSTALL: Text = ["安装", "安裝", "Install"];
-const ADVANCED: Text = ["高级", "進階", "Advanced"];
 const SETTINGS: Text = ["设置", "設定", "Settings"];
 const MOUNT: Text = ["挂载", "掛載", "Mount"];
 
@@ -43,34 +42,33 @@ pub const ENTRIES: &[Entry] = &[
     entry(["恢复", "還原", "Restore"], HOME, Screen::Restore, &["huifu", "hf", "restore"]),
     entry(MOUNT, HOME, Screen::Mount, &["guazai", "gz", "mount", "umount"]),
     entry(["清除数据", "清除資料", "Wipe data"], HOME, Screen::Wipe, &["qingchushuju", "qcsj", "wipe", "format", "geshihua", "gsh"]),
-    entry(["任务", "任務", "Tasks"], ADVANCED, Screen::Tasks, &["renwu", "rw", "tasks", "anzhuangjindu", "azjd", "xiazai", "xz"]),
+    entry(["任务", "任務", "Tasks"], HOME, Screen::Tasks, &["renwu", "rw", "tasks", "anzhuangjindu", "azjd", "xiazai", "xz"]),
     entry(
         ["分区管理", "分割區管理", "Partitions"],
-        ADVANCED,
+        HOME,
         Screen::Partitions,
         &["fenquguanli", "fqgl", "partition", "partitions", "fenqubiao", "fqb", "daochu", "dc", "xiehui", "xh"],
     ),
-    entry(["关机", "關機", "Power off"], ADVANCED, Screen::Shutdown, &["guanji", "gj", "poweroff", "shutdown", "power"]),
-    entry(["录屏", "錄影", "Screen recording"], ADVANCED, Screen::Record, &["luping", "lp", "luzhi", "lz", "record", "screenrecord", "recording"]),
-    entry(ADVANCED, HOME, Screen::Advanced, &["gaoji", "gj", "advanced"]),
-    entry(["文件管理", "檔案管理", "File manager"], ADVANCED, Screen::Files, &["wenjianguanli", "wjgl", "files", "file"]),
-    entry(["终端", "終端機", "Terminal"], ADVANCED, Screen::Terminal, &["zhongduan", "zd", "terminal", "shell"]),
+    entry(["关机", "關機", "Power off"], HOME, Screen::Shutdown, &["guanji", "gj", "poweroff", "shutdown", "power"]),
+    entry(["录屏", "錄影", "Screen recording"], HOME, Screen::Record, &["luping", "lp", "luzhi", "lz", "record", "screenrecord", "recording"]),
+    entry(["文件管理", "檔案管理", "File manager"], HOME, Screen::Files, &["wenjianguanli", "wjgl", "files", "file"]),
+    entry(["终端", "終端機", "Terminal"], HOME, Screen::Terminal, &["zhongduan", "zd", "terminal", "shell"]),
     entry(
         ["修复 SELinux 上下文", "修復 SELinux 上下文", "Fix SELinux contexts"],
-        ADVANCED,
+        HOME,
         Screen::Relabel,
         &["xiufuselinuxshangxiawen", "xfsxw", "xiufu", "xf", "shangxiawen", "context", "restorecon", "label"],
     ),
     entry(
         ["文件系统", "檔案系統", "Filesystems"],
-        ADVANCED,
+        HOME,
         Screen::Filesystems,
         &["wenjianxitong", "wjxt", "genghuan", "gh", "fsck", "filesystem", "f2fs", "ext4"],
     ),
-    entry(["导出日志", "匯出記錄", "Export logs"], ADVANCED, Screen::Logs, &["daochurizhi", "dcrz", "rizhi", "rz", "logs", "dmesg"]),
+    entry(["导出日志", "匯出記錄", "Export logs"], HOME, Screen::Logs, &["daochurizhi", "dcrz", "rizhi", "rz", "logs", "dmesg"]),
     entry(
         ["系统更新", "系統更新", "System update"],
-        ADVANCED,
+        HOME,
         Screen::Update,
         &["xitonggengxin", "xtgx", "hebing", "hb", "xiazai", "xz", "wanzhenggengxinbao", "wzgxb", "update", "ota", "merge", "snapshot", "download"],
     ),
@@ -127,14 +125,27 @@ pub const ENTRIES: &[Entry] = &[
 ];
 
 /// The entries `query` finds, best first: a title in `l` holding it, then a
-/// key starting with it, then a key holding it.
-pub fn find(query: &str, l: Lang) -> Vec<&'static Entry> {
+/// key starting with it, then a key holding it. `names` is what the owner
+/// called the home page's entries, so a feature renamed there is found by its
+/// own name too（2026-11-28）。
+pub fn find(query: &str, l: Lang, names: &std::collections::BTreeMap<String, String>) -> Vec<&'static Entry> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Vec::new();
     }
+    // 主人给首页那一条起的名字：这一页现在也叫这个。
+    let homes: Vec<(Screen, &str)> = crate::app::default_rest()
+        .into_iter()
+        .filter_map(|entry| {
+            names
+                .get(entry.id())
+                .filter(|name| !name.is_empty())
+                .map(|name| (entry.screen(), name.as_str()))
+        })
+        .collect();
+    let own = |screen: Screen| homes.iter().find(|(there, _)| *there == screen).map(|(_, name)| *name);
     let rank = |e: &Entry| {
-        if l.pick(e.title).to_lowercase().contains(&q) {
+        if l.pick(e.title).to_lowercase().contains(&q) || own(e.screen).is_some_and(|name| name.to_lowercase().contains(&q)) {
             Some(0)
         } else if e.keys.iter().any(|k| k.starts_with(&q)) {
             Some(1)
@@ -151,8 +162,23 @@ pub fn find(query: &str, l: Lang) -> Vec<&'static Entry> {
 
 /// What [`find`] finds that the phone has, as `offers` tells of each page:
 /// a phone whose WLAN the recovery does not bring up has no WLAN page.
-pub fn find_on(query: &str, l: Lang, offers: impl Fn(Screen) -> bool) -> Vec<&'static Entry> {
-    find(query, l).into_iter().filter(|e| offers(e.screen)).collect()
+pub fn find_on(
+    query: &str,
+    l: Lang,
+    names: &std::collections::BTreeMap<String, String>,
+    offers: impl Fn(Screen) -> bool,
+) -> Vec<&'static Entry> {
+    find(query, l, names).into_iter().filter(|e| offers(e.screen)).collect()
+}
+
+/// 这一页在首页上被主人叫什么；没改过名字就是 `None`。
+pub fn home_name(screen: Screen, names: &std::collections::BTreeMap<String, String>) -> Option<&str> {
+    crate::app::default_rest().into_iter().find_map(|entry| {
+        if entry.action() != crate::app::Action::Open(screen) {
+            return None;
+        }
+        names.get(entry.id()).filter(|name| !name.is_empty()).map(String::as_str)
+    })
 }
 
 #[cfg(test)]
@@ -160,7 +186,7 @@ mod tests {
     use super::*;
 
     fn titles(query: &str) -> Vec<&'static str> {
-        find(query, Lang::Hans).iter().map(|e| Lang::Hans.pick(e.title)).collect()
+        find(query, Lang::Hans, &Default::default()).iter().map(|e| Lang::Hans.pick(e.title)).collect()
     }
 
     #[test]
@@ -194,8 +220,8 @@ mod tests {
     #[test]
     fn the_wlan_is_found_where_the_phone_has_it() {
         assert_eq!(titles("wifi"), ["WLAN"]);
-        assert_eq!(find_on("wlan", Lang::Hans, |_| true).iter().map(|e| e.title[0]).collect::<Vec<_>>(), ["WLAN"]);
-        assert!(find_on("wlan", Lang::Hans, |s| s != Screen::Wlan).is_empty());
+        assert_eq!(find_on("wlan", Lang::Hans, &Default::default(), |_| true).iter().map(|e| e.title[0]).collect::<Vec<_>>(), ["WLAN"]);
+        assert!(find_on("wlan", Lang::Hans, &Default::default(), |s| s != Screen::Wlan).is_empty());
         assert_eq!(titles("xiazai"), ["系统更新", "Skyward 更新"]);
     }
 
@@ -203,32 +229,32 @@ mod tests {
     fn the_second_system_is_found_where_the_phone_can_hold_one() {
         assert_eq!(titles("sxt"), ["双系统"]);
         assert_eq!(titles("qiehuan"), ["双系统"]);
-        assert_eq!(find("dual", Lang::En).iter().map(|e| e.title[2]).collect::<Vec<_>>(), ["Dual boot"]);
-        assert!(find_on("shuangxitong", Lang::Hans, |s| s != Screen::Systems).is_empty());
+        assert_eq!(find("dual", Lang::En, &Default::default()).iter().map(|e| e.title[2]).collect::<Vec<_>>(), ["Dual boot"]);
+        assert!(find_on("shuangxitong", Lang::Hans, &Default::default(), |s| s != Screen::Systems).is_empty());
     }
 
     #[test]
     fn skyward_is_updated_from_its_own_page() {
         assert_eq!(titles("skyward"), ["Skyward 更新"]);
         assert_eq!(titles("gengxin"), ["系统更新", "Skyward 更新"]);
-        assert!(find_on("skyward", Lang::Hans, |s| s != Screen::SkywardUpdate).is_empty());
+        assert!(find_on("skyward", Lang::Hans, &Default::default(), |s| s != Screen::SkywardUpdate).is_empty());
     }
 
     #[test]
     fn a_title_is_found_in_the_language_the_pages_speak() {
-        let english = |query| find(query, Lang::En).iter().map(|e| e.title[2]).collect::<Vec<_>>();
+        let english = |query| find(query, Lang::En, &Default::default()).iter().map(|e| e.title[2]).collect::<Vec<_>>();
         assert_eq!(english("brightness"), ["Screen brightness"]);
         assert_eq!(english("about"), ["About phone"]);
         assert_eq!(english("wi-fi"), ["Wi-Fi"]);
-        let traditional = find("設定", Lang::Hant);
+        let traditional = find("設定", Lang::Hant, &Default::default());
         assert_eq!(traditional.first().map(|e| e.title[1]), Some("設定"));
-        assert!(find("设置", Lang::Hant).is_empty(), "the simplified title belongs to the other script");
+        assert!(find("设置", Lang::Hant, &Default::default()).is_empty(), "the simplified title belongs to the other script");
     }
 
     #[test]
     fn nothing_typed_finds_nothing() {
-        assert!(find("", Lang::Hans).is_empty());
-        assert!(find("   ", Lang::En).is_empty());
-        assert!(find("zzzz", Lang::Hant).is_empty());
+        assert!(find("", Lang::Hans, &Default::default()).is_empty());
+        assert!(find("   ", Lang::En, &Default::default()).is_empty());
+        assert!(find("zzzz", Lang::Hant, &Default::default()).is_empty());
     }
 }

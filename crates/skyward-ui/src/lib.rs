@@ -15,6 +15,7 @@ pub mod geom;
 pub mod glow;
 pub mod icons;
 pub mod lang;
+pub mod layout;
 pub mod motion;
 pub mod pages;
 pub mod pinyin;

@@ -445,7 +445,7 @@ impl App {
         let w = m.w as f32;
         let l = self.state.lang;
         let white = Rgba::rgb(255, 255, 255);
-        let tall = shade_height(&t, self.state.tiles.len(), self.shade_editing);
+        let tall = shade_height(&t, &self.state.tiles, self.shade_editing);
         let sheet = tall * self.shade;
         let top = sheet - tall;
         // Opaque: the foot is a rectangle with a disc at each corner, and the
@@ -648,7 +648,7 @@ impl App {
             }
             hits.push((cap, hit));
         }
-        // 编辑时滑条底下：还没摆上去的磁贴，一排六个小圆钮，点一下就上来。
+        // 编辑时滑条底下：还没摆上去的磁贴，点一下就上来。
         if editing {
             let add_top = row + cap_h + m.dp(16.0);
             let left = self.state.tiles_left();
@@ -656,33 +656,53 @@ impl App {
                 let said = l.pick(["磁贴都摆上了", "磁貼都擺上了", "Every tile is on the sheet"]);
                 out.text(&f.body, said, m.margin, add_top + m.dp(18.0), m.dp(12.5), white.with_alpha(150), None);
             } else {
-                out.text(&f.body, l.pick(["添加磁贴", "新增磁貼", "Add a tile"]), m.margin, add_top + m.dp(20.0), m.dp(12.5), white.with_alpha(150), None);
-                let small = m.dp(32.0);
-                let small_px = m.dp(9.0);
-                let cols = 6.0;
-                let slot_w = (w - m.margin * 2.0) / cols;
-                let pitch = small + m.dp(24.0);
-                for (k, tile) in left.iter().enumerate() {
-                    let (col, line_no) = (k % 6, k / 6);
-                    let cx = m.margin + slot_w * (col as f32 + 0.5);
-                    let cy = add_top + m.dp(54.0) + line_no as f32 * pitch + small / 2.0;
-                    out.stroke_circle(cx, cy, small / 2.0, m.dp(1.3), white.with_alpha(115));
-                    Self::shade_glyph(out, &t, *tile, false, cx, cy, small * 0.46, white.with_alpha(200));
-                    let name = tile.label(l);
-                    // 名字太长就按格宽截：六列一格才 200 多像素。
-                    let room = slot_w - m.dp(6.0);
-                    let shown = if out.text_width(&f.body, name, small_px) <= room {
-                        name.to_string()
-                    } else {
-                        let mut cut = name.to_string();
-                        while !cut.is_empty() && out.text_width(&f.body, &cut, small_px) > room {
-                            cut.pop();
-                        }
-                        cut
-                    };
-                    out.text_center(&f.body, &shown, cx, cy + small / 2.0 + m.dp(10.0), small_px, white.with_alpha(180));
-                    let reach = Rect::new(cx - slot_w / 2.0, cy - small / 2.0 - m.dp(3.0), slot_w, pitch - m.dp(6.0));
-                    hits.push((reach, ShadeHit::TileAdd(*tile)));
+                // 候选已经三十几枚，平铺着找要扫很久：按「开关与动作」和「页面」
+                // 分两段，一排七个、小一圈（2026-11-28）。
+                let small = m.dp(30.0);
+                let small_px = m.dp(8.5);
+                let cols = 7;
+                let slot_w = (w - m.margin * 2.0) / cols as f32;
+                let pitch = small + m.dp(20.0);
+                let mut top = add_top;
+                let groups = [
+                    (
+                        l.pick(["开关与动作", "開關與動作", "Switches and actions"]),
+                        left.iter().copied().filter(|tile| tile.screen().is_none()).collect::<Vec<_>>(),
+                    ),
+                    (
+                        l.pick(["页面", "頁面", "Pages"]),
+                        left.iter().copied().filter(|tile| tile.screen().is_some()).collect::<Vec<_>>(),
+                    ),
+                ];
+                for (title, tiles) in groups {
+                    if tiles.is_empty() {
+                        continue;
+                    }
+                    out.text(&f.body, title, m.margin, top + m.dp(18.0), m.dp(11.5), white.with_alpha(150), None);
+                    for (k, tile) in tiles.iter().enumerate() {
+                        let (col, line_no) = (k % cols, k / cols);
+                        let cx = m.margin + slot_w * (col as f32 + 0.5);
+                        let cy = top + m.dp(46.0) + line_no as f32 * pitch + small / 2.0;
+                        out.stroke_circle(cx, cy, small / 2.0, m.dp(1.3), white.with_alpha(115));
+                        Self::shade_glyph(out, &t, *tile, false, cx, cy, small * 0.46, white.with_alpha(200));
+                        let name = tile.label(l);
+                        // 名字太长就按格宽截：七列一格不到 200 像素。
+                        let room = slot_w - m.dp(4.0);
+                        let shown = if out.text_width(&f.body, name, small_px) <= room {
+                            name.to_string()
+                        } else {
+                            let mut cut = name.to_string();
+                            while !cut.is_empty() && out.text_width(&f.body, &cut, small_px) > room {
+                                cut.pop();
+                            }
+                            cut
+                        };
+                        out.text_center(&f.body, &shown, cx, cy + small / 2.0 + m.dp(9.0), small_px, white.with_alpha(180));
+                        let reach = Rect::new(cx - slot_w / 2.0, cy - small / 2.0 - m.dp(3.0), slot_w, pitch - m.dp(6.0));
+                        hits.push((reach, ShadeHit::TileAdd(*tile)));
+                    }
+                    let lines = tiles.len().div_ceil(cols);
+                    top += m.dp(46.0) + lines as f32 * pitch - m.dp(6.0);
                 }
             }
         }
@@ -840,10 +860,14 @@ impl App {
         if self.toast.as_ref().is_some_and(|m| now >= m.1) {
             self.toast = None;
         }
-        let title = self.frame.as_ref().expect("rendered above").title;
-        let key = (title, self.state.dark);
+        let title = self.frame.as_ref().expect("rendered above").title.clone();
+        let key = (title.clone(), self.state.dark);
         if self.titles.as_ref().is_none_or(|(k, _, _)| *k != key) {
-            self.titles = Some((key, Blurs::new(widgets::big_title(&t, f, title)), Blurs::new(widgets::small_title(&t, f, title))));
+            self.titles = Some((
+                key,
+                Blurs::new(widgets::big_title(&t, f, title.as_ref())),
+                Blurs::new(widgets::small_title(&t, f, title.as_ref())),
+            ));
         }
         if let Some(fold) = self.frame.as_ref().and_then(|fr| fr.fold) {
             let key = (fold.hint, self.state.dark);
@@ -1280,6 +1304,37 @@ impl App {
         self.say(&fmt::screenshots_not_kept(self.state.lang, why), now);
     }
 
+    /// 存储里有哪些布局文件，读到了（或读不成，`why` 说为什么）。
+    pub fn layouts_listed(&mut self, files: Result<Vec<crate::layout::File>, String>, now: u64) {
+        if let Err(why) = &files {
+            self.report(why, now);
+        }
+        self.state.layouts = Some(files);
+        self.refresh();
+    }
+
+    /// 导出布局有了结果。
+    pub fn layout_exported(&mut self, result: Result<String, String>, now: u64) {
+        let l = self.state.lang;
+        let message = match result {
+            Ok(path) => format!("{} {path}", l.pick(["布局已导出到", "佈局已匯出到", "The layout is written to"])),
+            Err(why) => why,
+        };
+        self.report(&message, now);
+        self.refresh();
+    }
+
+    /// 导入布局有了结果。
+    pub fn layout_imported(&mut self, result: Result<(), String>, now: u64) {
+        let l = self.state.lang;
+        let message = match result {
+            Ok(()) => l.pick(["布局已导入", "佈局已匯入", "The layout is in"]).to_string(),
+            Err(why) => why,
+        };
+        self.report(&message, now);
+        self.refresh();
+    }
+
     /// File transfer could not be turned on or off as the switch says: it
     /// shows how it stands, and why.
     pub fn file_transfer_failed(&mut self, on: bool, why: &str, now: u64) {
@@ -1319,7 +1374,15 @@ mod tests {
             Screen::Search,
             Screen::Backup,
             Screen::Restore,
-            Screen::Advanced,
+            Screen::HomeOrder,
+            Screen::HomeSection,
+            Screen::HomeIcon,
+            Screen::EntryName,
+            Screen::HomeTitle,
+            Screen::Layout,
+            Screen::LayoutBrowse,
+            Screen::HomeSectionView,
+            Screen::FileTransfer,
             Screen::Files,
             Screen::Terminal,
             Screen::Language,

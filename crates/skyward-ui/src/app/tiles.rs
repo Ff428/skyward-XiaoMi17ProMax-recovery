@@ -31,7 +31,6 @@ pub enum Tile {
     Restore,
     Filesystems,
     Logs,
-    Advanced,
     DataApps,
     Systems,
     Tasks,
@@ -43,6 +42,13 @@ pub enum Tile {
     ImageBackup,
     /// Root 管理：KernelSU / Magisk 与在线写入。
     Root,
+    /// 2026-11-28 追加：高级页去掉之后，原来只在那一页里点到的东西各领一枚。
+    Decrypt,
+    SkywardUpdate,
+    Relabel,
+    HomeOrder,
+    /// 布局备份：把首页与磁贴的摆法写成一个文件，也能读回来。
+    Layout,
 }
 
 /// 没存过时摆的：v124 那十二枚，一行四个、三排。
@@ -62,7 +68,7 @@ pub const DEFAULT: [Tile; 12] = [
 ];
 
 /// 全部磁贴，按默认摆的顺序排：前十二个是 [`DEFAULT`]，后面是后加的。
-pub const TILES: [Tile; 30] = [
+pub const TILES: [Tile; 34] = [
     Tile::Wlan,
     Tile::Screenshot,
     Tile::Reboot,
@@ -83,7 +89,6 @@ pub const TILES: [Tile; 30] = [
     Tile::Restore,
     Tile::Filesystems,
     Tile::Logs,
-    Tile::Advanced,
     Tile::DataApps,
     Tile::Systems,
     Tile::Tasks,
@@ -93,6 +98,11 @@ pub const TILES: [Tile; 30] = [
     Tile::Serve,
     Tile::ImageBackup,
     Tile::Root,
+    Tile::Decrypt,
+    Tile::SkywardUpdate,
+    Tile::Relabel,
+    Tile::HomeOrder,
+    Tile::Layout,
 ];
 
 impl Tile {
@@ -119,7 +129,6 @@ impl Tile {
             Tile::Partitions => "partitions",
             Tile::Filesystems => "filesystems",
             Tile::Logs => "logs",
-            Tile::Advanced => "advanced",
             Tile::DataApps => "dataapps",
             Tile::Systems => "systems",
             Tile::Tasks => "tasks",
@@ -129,6 +138,11 @@ impl Tile {
             Tile::Serve => "serve",
             Tile::ImageBackup => "image-backup",
             Tile::Root => "root",
+            Tile::Decrypt => "decrypt",
+            Tile::SkywardUpdate => "skywardupdate",
+            Tile::Relabel => "relabel",
+            Tile::HomeOrder => "homeorder",
+            Tile::Layout => "layout",
         }
     }
 
@@ -160,7 +174,6 @@ impl Tile {
             Tile::Partitions => l.pick(["分区", "分割區", "Partitions"]),
             Tile::Filesystems => l.pick(["文件系统", "檔案系統", "Filesystems"]),
             Tile::Logs => l.pick(["日志", "日誌", "Logs"]),
-            Tile::Advanced => l.pick(["高级", "進階", "Advanced"]),
             Tile::DataApps => l.pick(["应用", "應用", "Apps"]),
             Tile::Systems => l.pick(["第二系统", "第二系統", "Dual boot"]),
             Tile::Tasks => l.pick(["任务", "任務", "Tasks"]),
@@ -170,12 +183,24 @@ impl Tile {
             Tile::Root => l.pick(["Root", "Root", "Root"]),
             Tile::Serve => l.pick(["无线传输", "無線傳輸", "Wi-Fi share"]),
             Tile::ImageBackup => l.pick(["分区镜像", "分割區映像檔", "Images"]),
+            Tile::Decrypt => l.pick(["解密数据", "解密資料", "Decrypt"]),
+            Tile::SkywardUpdate => l.pick(["版本更新", "版本更新", "Version update"]),
+            Tile::Relabel => l.pick(["文件标签", "檔案標籤", "Relabel"]),
+            Tile::HomeOrder => l.pick(["首页排序", "首頁排序", "Home order"]),
+            Tile::Layout => l.pick(["布局备份", "佈局備份", "Layout backup"]),
         }
     }
 
     /// 它在默认顺序里的位置：「可添加」那段按这个排，删了又加也回到原处。
     pub fn rank(self) -> usize {
         TILES.iter().position(|&t| t == self).unwrap_or(TILES.len())
+    }
+
+    /// 还没摆上去的磁贴，按默认顺序。
+    pub fn left(on: &[Tile]) -> Vec<Tile> {
+        let mut left: Vec<Tile> = TILES.into_iter().filter(|t| !on.contains(t)).collect();
+        left.sort_by_key(|t| t.rank());
+        left
     }
 
     /// 磁贴的图标；`None` 是这一枚自己手绘（截图那台相机、录屏那个红点）。
@@ -201,7 +226,6 @@ impl Tile {
             Tile::Partitions => Icon::Mount,
             Tile::Filesystems => Icon::Layers,
             Tile::Logs => Icon::Log,
-            Tile::Advanced => Icon::More,
             Tile::DataApps => Icon::Folder,
             Tile::Systems => Icon::Systems,
             Tile::Tasks => Icon::Clock,
@@ -211,6 +235,11 @@ impl Tile {
             Tile::Root => Icon::Shield,
             Tile::Serve => Icon::Globe,
             Tile::ImageBackup => Icon::Backup,
+            Tile::Decrypt => Icon::Lock,
+            Tile::SkywardUpdate => Icon::Install,
+            Tile::Relabel => Icon::Layers,
+            Tile::HomeOrder => Icon::Sort,
+            Tile::Layout => Icon::Backup,
         })
     }
 
@@ -237,7 +266,6 @@ impl Tile {
             Tile::Partitions => Some(Screen::Partitions),
             Tile::Filesystems => Some(Screen::Filesystems),
             Tile::Logs => Some(Screen::Logs),
-            Tile::Advanced => Some(Screen::Advanced),
             Tile::DataApps => Some(Screen::DataApps),
             Tile::Systems => Some(Screen::Systems),
             Tile::Tasks => Some(Screen::Tasks),
@@ -247,6 +275,11 @@ impl Tile {
             Tile::Root => Some(Screen::Root),
             Tile::Serve => Some(Screen::Serve),
             Tile::ImageBackup => Some(Screen::ImageBackup),
+            Tile::Decrypt => Some(Screen::Decrypt),
+            Tile::SkywardUpdate => Some(Screen::SkywardUpdate),
+            Tile::Relabel => Some(Screen::Relabel),
+            Tile::HomeOrder => Some(Screen::HomeOrder),
+            Tile::Layout => Some(Screen::Layout),
         }
     }
 
@@ -289,9 +322,7 @@ pub fn to_text(tiles: &[Tile]) -> String {
 impl State {
     /// 还没摆上去的磁贴，按默认顺序。
     pub fn tiles_left(&self) -> Vec<Tile> {
-        let mut left: Vec<Tile> = TILES.into_iter().filter(|t| !self.tiles.contains(t)).collect();
-        left.sort_by_key(|t| t.rank());
-        left
+        Tile::left(&self.tiles)
     }
 
     /// 把磁贴 `tile` 从控制中心拿下来；本来就没摆就不动。
@@ -388,7 +419,9 @@ mod tests {
         let left = s.tiles_left();
         assert_eq!(left.len(), TILES.len() - DEFAULT.len(), "后加的都在「可添加」里");
         assert_eq!(left.first(), Some(&Tile::Vibrate), "「可添加」按默认顺序排");
-        assert_eq!(left.last(), Some(&Tile::Serve));
+        assert_eq!(left.last(), Some(&Tile::Layout), "最后加的一枚是布局备份");
+        assert_eq!(TILES.len(), 34, "老的三十枚去掉高级工具，补上五枚新的");
+        assert!(Tile::from_id("advanced").is_none(), "高级工具那一枚不再有了");
     }
 
     /// 每一枚能开页的磁贴，按下去都打开它自己那一页（2026-11-22）。

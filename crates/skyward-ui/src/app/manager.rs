@@ -327,7 +327,13 @@ impl App {
     /// The runtime listed a folder for the file manager at `listed`, in Unix
     /// seconds, or could not: it becomes the folder shown.
     pub fn set_files(&mut self, folder: String, files: Result<Vec<FileRow>, String>, listed: i64) {
-        self.show_folder(Screen::Files, folder, files, listed);
+        // 布局备份挑位置那一页列的是它自己那一格：同一个 Effect，落在谁身上看
+        // 现在开着哪一页（2026-11-28）。
+        let screen = match self.screen() {
+            Screen::LayoutBrowse => Screen::LayoutBrowse,
+            _ => Screen::Files,
+        };
+        self.show_folder(screen, folder, files, listed);
     }
 
     /// The runtime listed a folder of `place` at `listed`, its path from
@@ -739,7 +745,7 @@ mod tests {
         app.compose(&mut c, &f, &i, "12:00", 0);
         app.file_job_ended(JobEnd::Stopped, 0);
         app.compose(&mut c, &f, &i, "12:00", 16);
-        assert_eq!(app.titles.as_ref().map(|((title, _), _, _)| *title), Some("复制未完成"));
+        assert_eq!(app.titles.as_ref().map(|((title, _), _, _)| title.to_string()), Some("复制未完成".to_string()));
     }
 
     #[test]

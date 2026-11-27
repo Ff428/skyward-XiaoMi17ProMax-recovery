@@ -291,6 +291,26 @@ pub struct State {
     pub vibration: f32,
     /// A computer connected over USB is offered internal storage.
     pub file_transfer: bool,
+    /// 文件传输的服务此刻是否真的在跑：开关只说要什么，这一项说实际。
+    /// 由 ui.rs 每轮写回（2026-11-28）。
+    pub transfer_running: bool,
+    /// 首页条目的自定义名字：`Entry::id()` → 名字；没在里面的用页面自带的名字。
+    pub entry_names: std::collections::BTreeMap<String, String>,
+    /// 首页顶上那个大字；空着就是页面自带的那个。
+    pub home_title: String,
+    /// 改它的时候输入框里的字。
+    pub home_title_edit: String,
+    /// 存储里的布局文件；还没读过是 `None`。
+    pub layouts: Option<Result<Vec<crate::layout::File>, String>>,
+    /// 挑布局位置时正在看的目录，以及这是在挑导出位置（真）还是挑要导入
+    /// 的文件（假）。
+    pub layout_dir: Folder,
+    pub layout_exporting: bool,
+    /// 「其他」摆在分类之间的哪个位置：`None` 是末尾（老设置就是这样）。
+    pub home_rest_at: Option<usize>,
+    /// 正在改名的那一条，以及名字页输入框里的字。
+    pub entry_edit: Option<Entry>,
+    pub entry_name: String,
     pub reboot: usize,
     /// What the wipe page has chosen, by place in [`WIPES`].
     pub wipe: [bool; WIPES.len()],
@@ -613,6 +633,26 @@ pub struct State {
     /// network, and whether it shows.
     pub password: String,
     pub show_password: bool,
+    /// 自己建的首页分类，想建几个建几个。
+    pub home_sections: Vec<Section>,
+    /// 单独放在首页最上面的条目（不进任何分类）。
+    pub home_top: Vec<Entry>,
+    /// 没进任何分类、也不置顶的条目，落在首页最下面的「其他」里。
+    pub home_rest: Vec<Entry>,
+    /// 「其他」在首页折起来了，以及它的名字（空着用「其他」）。
+    pub home_rest_collapsed: bool,
+    pub home_rest_name: String,
+    /// 排序页拎着的那一条。
+    pub home_pick: Option<Entry>,
+    /// 正在改名/新建的那个分类：`None` 是新建。
+    pub section_edit: Option<usize>,
+    /// 二级页正在看的那一栏。
+    pub section_view: Option<usize>,
+    /// 改名页上打的字，与挑的图标。
+    pub section_name: String,
+    pub section_icon: crate::icons::Icon,
+    /// 名字页改的是「其他」而不是某个分类（它不能删）。
+    pub section_rest: bool,
     /// The phone maker's update server is known, and the update page asks
     /// it.
     pub update_server: bool,
@@ -663,6 +703,16 @@ impl Default for State {
             // own start the motor is barely felt on this phone (2026-11-13).
             vibration: 0.7,
             file_transfer: true,
+            transfer_running: false,
+            entry_names: std::collections::BTreeMap::new(),
+            home_title: String::new(),
+            home_title_edit: String::new(),
+            layouts: None,
+            layout_dir: Folder::new("/sdcard"),
+            layout_exporting: true,
+            home_rest_at: None,
+            entry_edit: None,
+            entry_name: String::new(),
             reboot: 0,
             wipe: [false; WIPES.len()],
             cache_partition: false,
@@ -801,6 +851,17 @@ impl Default for State {
             adding: None,
             password: String::new(),
             show_password: false,
+            home_sections: Vec::new(),
+            home_top: Vec::new(),
+            home_rest: crate::app::home::default_rest(),
+            home_rest_collapsed: false,
+            home_rest_name: String::new(),
+            home_pick: None,
+            section_edit: None,
+            section_view: None,
+            section_name: String::new(),
+            section_icon: crate::icons::Icon::Layers,
+            section_rest: false,
             update_server: false,
             check: Check::Idle,
             have: Have::Nothing,
@@ -854,6 +915,7 @@ impl State {
             Screen::FilesOtg => &self.otg,
             Screen::Choose(Place::Storage) => &self.storage,
             Screen::Choose(Place::UsbDrive) => &self.drive,
+            Screen::LayoutBrowse => &self.layout_dir,
             other => unreachable!("{other:?} lists no folder"),
         }
     }
@@ -864,6 +926,7 @@ impl State {
             Screen::FilesOtg => &mut self.otg,
             Screen::Choose(Place::Storage) => &mut self.storage,
             Screen::Choose(Place::UsbDrive) => &mut self.drive,
+            Screen::LayoutBrowse => &mut self.layout_dir,
             other => unreachable!("{other:?} lists no folder"),
         }
     }

@@ -756,6 +756,57 @@ fn blur_room(t: &Theme) -> f32 {
 /// The large title a page opens with, as ink that fades and blurs away
 /// while the page scrolls; it sits where the page starts and scrolls with
 /// it.
+/// 一枚圆底小图标钮：栏目标题右边那几枚（改名、删除、上移）用它。
+pub fn icon_button(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, d: f32, ink: Rgba, icon: crate::icons::Icon) {
+    c.fill_circle(cx, cy, d / 2.0, t.pal.search);
+    crate::icons::glyph(c, icon, cx, cy, d * 0.52, ink);
+}
+
+/// 折叠用的圆钮：展开时箭头朝上，折叠时朝下（2026-11-28）。
+pub fn fold_button(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, d: f32, collapsed: bool) {
+    let m = &t.m;
+    c.fill_circle(cx, cy, d / 2.0, t.pal.search);
+    let ink = t.pal.subtitle;
+    let (w, h, sw) = (d * 0.36, d * 0.20, m.chevron_stroke * 1.1);
+    if collapsed {
+        c.line(cx - w / 2.0, cy - h / 2.0, cx, cy + h / 2.0, sw, ink);
+        c.line(cx, cy + h / 2.0, cx + w / 2.0, cy - h / 2.0, sw, ink);
+    } else {
+        c.line(cx - w / 2.0, cy + h / 2.0, cx, cy - h / 2.0, sw, ink);
+        c.line(cx, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0, sw, ink);
+    }
+}
+
+/// 一枚朝下的箭头，落在 `right` 左边：与行尾那个 `>` 同尺寸。
+pub fn chevron_down(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
+    let m = &t.m;
+    let (w, h, sw) = (m.chevron_w, m.chevron_h, m.chevron_stroke);
+    let x0 = right - w + sw / 2.0;
+    let x1 = right - sw / 2.0;
+    c.line(x0, cy - h / 2.0 + sw / 2.0, (x0 + x1) / 2.0, cy + h / 2.0 - sw / 2.0, sw, color);
+    c.line((x0 + x1) / 2.0, cy + h / 2.0 - sw / 2.0, x1, cy - h / 2.0 + sw / 2.0, sw, color);
+}
+
+/// 一枚朝上的箭头，位置同上。
+pub fn chevron_up(c: &mut Canvas, t: &Theme, right: f32, cy: f32, color: Rgba) {
+    let m = &t.m;
+    let (w, h, sw) = (m.chevron_w, m.chevron_h, m.chevron_stroke);
+    let x0 = right - w + sw / 2.0;
+    let x1 = right - sw / 2.0;
+    c.line(x0, cy + h / 2.0 - sw / 2.0, (x0 + x1) / 2.0, cy - h / 2.0 + sw / 2.0, sw, color);
+    c.line((x0 + x1) / 2.0, cy - h / 2.0 + sw / 2.0, x1, cy + h / 2.0 - sw / 2.0, sw, color);
+}
+
+/// 一个小圆钮里画一个 ×：收起/删除这类「移走」的动作用它。
+pub fn cross_button(c: &mut Canvas, t: &Theme, cx: f32, cy: f32, d: f32, fill: Rgba, ink: Rgba) {
+    let m = &t.m;
+    c.fill_circle(cx, cy, d / 2.0, fill);
+    let r = d * 0.22;
+    let sw = m.chevron_stroke;
+    c.line(cx - r, cy - r, cx + r, cy + r, sw, ink);
+    c.line(cx + r, cy - r, cx - r, cy + r, sw, ink);
+}
+
 pub fn big_title(t: &Theme, f: &Fonts, title: &str) -> Sprite {
     let m = &t.m;
     let pad = blur_room(t);
@@ -1399,8 +1450,22 @@ pub fn text_field(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, text: &str) ->
 /// Draw the text field's card from `x0`, `top`, with its cursor if
 /// `caret`; returns where the cursor is.
 fn draw_text_field(c: &mut Canvas, t: &Theme, f: &Fonts, x0: f32, top: f32, text: &str, caret: bool) -> Rect {
+    let w = t.m.w as f32 - t.m.margin * 2.0;
+    draw_text_field_in(c, t, f, x0, top, w, text, caret)
+}
+
+/// 同一个文本框，宽由调用方给：改名页里它与一枚圆钮并排，占不满一行。
+pub fn text_field_in(c: &mut Canvas, t: &Theme, f: &Fonts, x: f32, top: f32, w: f32, text: &str) -> (f32, Caret) {
+    let at = draw_text_field_in(c, t, f, x, top, w, text, false);
+    let caret = caret_over(at, |art, dx, dy| {
+        draw_text_field_in(art, t, f, x - dx, top - dy, w, text, true);
+    });
+    (top + t.m.dp(56.0), caret)
+}
+
+fn draw_text_field_in(c: &mut Canvas, t: &Theme, f: &Fonts, x0: f32, top: f32, w: f32, text: &str, caret: bool) -> Rect {
     let m = &t.m;
-    let (w, h) = (m.w as f32 - m.margin * 2.0, m.dp(56.0));
+    let h = m.dp(56.0);
     c.fill_round_rect(x0, top, w, h, m.card_radius, t.pal.card);
     let (x, room) = (x0 + m.inner, w - m.inner * 2.0 - m.dp(4.0));
     let px = m.row_title_px;

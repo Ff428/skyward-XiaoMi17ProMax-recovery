@@ -800,9 +800,299 @@ impl App {
                 self.state.layer = Layer::Letters;
                 self.open(Screen::WlanAdd);
             }
+            // 首页分栏：点一条拎起来，再点一条放到它前面；点栏标题放到那栏末尾。
+            Action::HomePick(entry) => {
+                self.materialize_home();
+                self.state.home_pick = if self.state.home_pick == Some(entry) { None } else { Some(entry) };
+                self.refresh();
+            }
+            Action::HomePlace(at) => {
+                self.materialize_home();
+                let Some(picked) = self.state.home_pick.take() else { return Vec::new() };
+                if picked == at {
+                    self.refresh();
+                    return Vec::new();
+                }
+                let in_top = self.state.home_top.contains(&at);
+                let target = if in_top { None } else { section_of(&self.state.home_sections, at) };
+                detach(&mut self.state.home_sections, &mut self.state.home_top, &mut self.state.home_rest, picked);
+                if in_top {
+                    let pos = self.state.home_top.iter().position(|e| *e == at).unwrap_or(0);
+                    self.state.home_top.insert(pos, picked);
+                } else {
+                    match target {
+                        Some(i) if i < self.state.home_sections.len() => {
+                            let pos = self.state.home_sections[i].entries.iter().position(|e| *e == at).unwrap_or(0);
+                            self.state.home_sections[i].entries.insert(pos, picked);
+                        }
+                        _ => {
+                            let pos = self.state.home_rest.iter().position(|e| *e == at).unwrap_or(0);
+                            self.state.home_rest.insert(pos, picked);
+                        }
+                    }
+                }
+                self.refresh();
+            }
+            Action::HomeToTop => {
+                self.materialize_home();
+                let Some(picked) = self.state.home_pick.take() else { return Vec::new() };
+                detach(&mut self.state.home_sections, &mut self.state.home_top, &mut self.state.home_rest, picked);
+                self.state.home_top.push(picked);
+                self.refresh();
+            }
+            Action::HomeToSection(section) => {
+                self.materialize_home();
+                let Some(picked) = self.state.home_pick.take() else { return Vec::new() };
+                detach(&mut self.state.home_sections, &mut self.state.home_top, &mut self.state.home_rest, picked);
+                match section {
+                    Some(i) if i < self.state.home_sections.len() => self.state.home_sections[i].entries.push(picked),
+                    _ => self.state.home_rest.push(picked),
+                }
+                self.refresh();
+            }
+            Action::HomeOpenSection(i) => {
+                if i < self.state.home_sections.len() {
+                    self.state.section_view = Some(i);
+                    self.state.home_pick = None;
+                    self.open(Screen::HomeSectionView);
+                }
+            }
+            Action::HomeAdopt(entry) => {
+                if let Some(i) = self.state.section_view
+                    && i < self.state.home_sections.len()
+                {
+                    detach(&mut self.state.home_sections, &mut self.state.home_top, &mut self.state.home_rest, entry);
+                    self.state.home_sections[i].entries.push(entry);
+                    self.refresh();
+                }
+            }
+            Action::HomeRenameRest => {
+                self.state.section_rest = true;
+                self.state.section_edit = None;
+                self.state.section_name = if self.state.home_rest_name.is_empty() {
+                    l.pick(["其他", "其他", "Others"]).to_string()
+                } else {
+                    self.state.home_rest_name.clone()
+                };
+                self.state.section_icon = crate::icons::Icon::Folder;
+                self.state.layer = Layer::Letters;
+                self.open(Screen::HomeSection);
+            }
+            Action::HomeNewSection => {
+                self.materialize_home();
+                self.state.section_rest = false;
+                self.state.section_edit = None;
+                self.state.section_name.clear();
+                self.state.section_icon = crate::icons::Icon::Layers;
+                self.state.layer = Layer::Letters;
+                self.open(Screen::HomeSection);
+            }
+            Action::HomeEditSection(i) => {
+                self.materialize_home();
+                self.state.section_rest = false;
+                if let Some(section) = self.state.home_sections.get(i) {
+                    self.state.section_name = section.name.clone();
+                    self.state.section_icon = section.icon;
+                    self.state.section_edit = Some(i);
+                    self.state.layer = Layer::Letters;
+                    self.open(Screen::HomeSection);
+                }
+            }
+            Action::HomeShiftSection { at, up } => {
+                self.materialize_home();
+                let len = self.state.home_sections.len();
+                let to = if up { at.checked_sub(1) } else { (at + 1 < len).then_some(at + 1) };
+                if let Some(to) = to {
+                    self.state.home_sections.swap(at, to);
+                    if self.state.section_view == Some(at) {
+                        self.state.section_view = Some(to);
+                    }
+                    self.refresh();
+                }
+            }
+            // 「其他」在各栏之间挪：它不能删，只能挪。
+            Action::HomeShiftRest { up } => {
+                // 第一次用的时候分类还只在显示层：先把它落进 state，不然没有东西可越过。
+                self.materialize_home();
+                let len = self.state.home_sections.len();
+                let at = self.state.home_rest_at.unwrap_or(len).min(len);
+                let to = if up { at.saturating_sub(1) } else { (at + 1).min(len) };
+                if to != at {
+                    self.state.home_rest_at = (to < len).then_some(to);
+                    self.refresh();
+                }
+            }
+            Action::HomeFoldSection(i) => {
+                if let Some(section) = self.state.home_sections.get_mut(i) {
+                    section.collapsed = !section.collapsed;
+                    self.refresh();
+                }
+            }
+            Action::HomeFoldRest => {
+                self.state.home_rest_collapsed = !self.state.home_rest_collapsed;
+                self.refresh();
+            }
+            Action::HomeDeleteSection(i) => {
+                self.materialize_home();
+                if i < self.state.home_sections.len() {
+                    // 「其他」排在删掉的那栏后面时，位置往前挪一格。
+                    if let Some(at) = self.state.home_rest_at
+                        && i < at
+                    {
+                        self.state.home_rest_at = Some(at - 1);
+                    }
+                    let gone = self.state.home_sections.remove(i);
+                    self.state.home_rest.extend(gone.entries);
+                    self.state.home_pick = None;
+                    self.state.section_view = None;
+                    // 在二级页删的，退回去；在别处删的只是刷新。
+                    if self.screen() == Screen::HomeSectionView {
+                        return self.back(now);
+                    }
+                    self.refresh();
+                }
+            }
+            Action::HomePickIcon(i) => {
+                if let Some(icon) = crate::icons::ALL.get(i) {
+                    self.state.section_icon = *icon;
+                    return self.back(now);
+                }
+            }
+            Action::HomeSectionDone => {
+                let name = self.state.section_name.trim().to_string();
+                if name.is_empty() {
+                    self.say(l.pick(["名字不能空着", "名字不能空著", "Give it a name"]), now);
+                } else if self.state.section_rest {
+                    self.state.section_rest = false;
+                    self.state.home_rest_name = name;
+                    return self.back(now);
+                } else {
+                    match self.state.section_edit.take() {
+                        Some(i) if i < self.state.home_sections.len() => {
+                            self.state.home_sections[i].name = name;
+                            self.state.home_sections[i].icon = self.state.section_icon;
+                            return self.back(now);
+                        }
+                        _ => {
+                            // 新建完直接进这一栏的二级页，好马上把条目收进来。
+                            self.state.home_sections.push(Section { name, entries: Vec::new(), icon: self.state.section_icon, collapsed: false });
+                            let at = self.state.home_sections.len() - 1;
+                            self.state.section_view = Some(at);
+                            let fx = self.back(now);
+                            self.open(Screen::HomeSectionView);
+                            return fx;
+                        }
+                    }
+                }
+            }
+            // 首页顶上那个大字也能改。
+            Action::EditHomeTitle => {
+                self.state.home_title_edit = self.state.home_title.clone();
+                self.state.layer = Layer::Letters;
+                self.open(Screen::HomeTitle);
+            }
+            Action::ExportLayout => return vec![Effect::ExportLayout],
+            // 挑位置：导出挑目录、导入挑文件。
+            Action::LayoutBrowseExport => {
+                self.state.layout_dir = Folder::new("/sdcard");
+                self.state.layout_exporting = true;
+                self.open(Screen::LayoutBrowse);
+            }
+            Action::LayoutBrowseImport => {
+                self.state.layout_dir = Folder::new("/sdcard/Skyward");
+                self.state.layout_exporting = false;
+                self.open(Screen::LayoutBrowse);
+            }
+            Action::LayoutUp => {
+                if let Some(up) = self.state.layout_dir.up() {
+                    return vec![Effect::ReadDir(up)];
+                }
+            }
+            Action::LayoutEnter(at) => {
+                // 页面把目录过滤出来单独列，这里按同一套过滤取第几个。
+                if let Ok(entries) = &self.state.layout_dir.entries
+                    && let Some(folder) = entries.iter().filter(|entry| matches!(entry.kind, FileKind::Folder { .. })).nth(at)
+                {
+                    return vec![Effect::ReadDir(self.state.layout_dir.inside(&folder.name))];
+                }
+            }
+            Action::LayoutExportHere => {
+                return vec![Effect::ExportLayoutTo { path: self.state.layout_dir.path.clone() }];
+            }
+            Action::LayoutPick(at) => {
+                if let Ok(entries) = &self.state.layout_dir.entries
+                    && let Some(file) = entries.iter().filter(|entry| matches!(entry.kind, FileKind::File) && entry.name.ends_with(".json")).nth(at)
+                {
+                    return vec![Effect::ImportLayout { path: self.state.layout_dir.inside(&file.name) }];
+                }
+            }
+            Action::ImportLayout(at) => {
+                if let Some(Ok(files)) = &self.state.layouts
+                    && let Some(file) = files.get(at)
+                {
+                    return vec![Effect::ImportLayout { path: file.path.clone() }];
+                }
+            }
+            Action::HomeTitleDone => {
+                self.state.home_title = self.state.home_title_edit.trim().to_string();
+                self.refresh();
+                return self.back(now);
+            }
+            // 给首页的某一条改名：名字按 `Entry::id()` 记，留空就是回默认。
+            Action::EntryRename(entry) => {
+                self.state.entry_edit = Some(entry);
+                self.state.entry_name = self.state.entry_names.get(entry.id()).cloned().unwrap_or_default();
+                self.state.layer = Layer::Letters;
+                self.open(Screen::EntryName);
+            }
+            Action::EntryNameDone => {
+                if let Some(entry) = self.state.entry_edit.take() {
+                    let name = self.state.entry_name.trim().to_string();
+                    if name.is_empty() {
+                        self.state.entry_names.remove(entry.id());
+                    } else {
+                        self.state.entry_names.insert(entry.id().to_string(), name);
+                    }
+                    self.refresh();
+                }
+                return self.back(now);
+            }
+            Action::EntryNameReset => {
+                if let Some(entry) = self.state.entry_edit.take() {
+                    self.state.entry_names.remove(entry.id());
+                    self.refresh();
+                }
+                return self.back(now);
+            }
+            Action::HomeReset => {
+                self.materialize_home();
+                // 恢复默认也把条目自己起的名字清掉，回到页面自带的名字。
+                self.state.entry_names.clear();
+                self.state.home_title.clear();
+                self.state.home_rest_at = None;
+                self.state.home_sections = default_sections(l);
+                self.state.home_rest_collapsed = false;
+                self.state.home_rest_name.clear();
+                self.state.home_top.clear();
+                self.state.home_rest = crate::app::home::default_rest();
+                let mut sections = self.state.home_sections.clone();
+                let mut top = self.state.home_top.clone();
+                let mut rest = self.state.home_rest.clone();
+                normalize(&mut sections, &mut top, &mut rest);
+                self.state.home_sections = sections;
+                self.state.home_top = top;
+                self.state.home_rest = rest;
+                self.state.home_pick = None;
+                self.refresh();
+            }
             Action::TypeInto(field) => {
-                let a = self.state.adding.as_mut().expect("the fields are on the page that adds a network");
-                if a.field != field {
+                // 只有「添加网络」这一页有格可指。名字页（分类名、条目的名字、
+                // 首页标题）的输入框也发这个动作，键盘本来就指着它，这里什么都不
+                // 用做：原来直接 expect，点一下输入框就把整个恢复界面停掉了
+                // （2026-11-28 的闪退就是这么来的）。
+                if let Some(a) = self.state.adding.as_mut()
+                    && a.field != field
+                {
                     a.field = field;
                     self.refresh();
                 }
@@ -1354,6 +1644,17 @@ impl App {
         }
     }
 
+    /// 第一次用（设置里没有任何分栏）时，内置的「刷机与备份」只活在显示层；
+    /// 用户一动它，就把它落进 state，之后按用户的来。
+    fn materialize_home(&mut self) {
+        if self.state.home_sections.is_empty() && self.state.home_top.is_empty() && rest_is_default(&self.state.home_rest) {
+            let l = self.state.lang;
+            self.state.home_sections = default_sections(l);
+            let taken: Vec<Entry> = self.state.home_sections.iter().flat_map(|section| section.entries.clone()).collect();
+            self.state.home_rest.retain(|entry| !taken.contains(entry));
+        }
+    }
+
     /// 这一页的输入框。
     fn typing(&mut self) -> &mut String {
         match self.screen() {
@@ -1361,6 +1662,10 @@ impl App {
             Screen::Decrypt => &mut self.state.code,
             Screen::Rename => &mut self.state.new_name,
             Screen::WlanPassword => &mut self.state.password,
+            // 分类名、条目的名字、首页标题：各一个字符串。
+            Screen::HomeSection => &mut self.state.section_name,
+            Screen::EntryName => &mut self.state.entry_name,
+            Screen::HomeTitle => &mut self.state.home_title_edit,
             Screen::Fetch => &mut self.state.fetch_url,
             Screen::WlanAdd => {
                 let a = self.state.adding.as_mut().expect("the page adds a network");
@@ -1460,7 +1765,7 @@ impl App {
             Cap::Enter => match self.screen() {
                 Screen::Search => match self.state.search_scope {
                     crate::app::SearchScope::Features => {
-                        if let Some(first) = search::find_on(&self.state.search, l, |screen| self.state.offers(screen)).first() {
+                        if let Some(first) = search::find_on(&self.state.search, l, &self.state.entry_names, |screen| self.state.offers(screen)).first() {
                             return self.act(Action::Open(first.screen), now);
                         }
                     }
@@ -1474,6 +1779,10 @@ impl App {
                     }
                 },
                 // Return starts the download, or stops the one under way.
+                // 名字页上的回车就是那个「完成」。
+                Screen::HomeSection => return self.act(Action::HomeSectionDone, now),
+                Screen::EntryName => return self.act(Action::EntryNameDone, now),
+                Screen::HomeTitle => return self.act(Action::HomeTitleDone, now),
                 Screen::Fetch if self.fetching() => return self.act(Action::FetchStop, now),
                 Screen::Fetch => return self.act(Action::FetchStart, now),
                 Screen::Decrypt if self.state.code.is_empty() => self.say(l.pick(["请输入锁屏密码", "請輸入螢幕鎖定密碼", "Enter the screen lock"]), now),
@@ -1916,5 +2225,178 @@ mod tests {
         app.touch(Touch::Up, &f, 0);
         assert_eq!(app.state.held, None);
         assert_eq!(app.state.search, "q");
+    }
+
+    // ---- 首页分栏、改名、布局备份（2026-11-28，取自 v0.5.13）----------------
+
+    /// 「其他」里文件管理那一行在不在：它进的是它自己那一页。
+    fn files_rows(app: &mut App, f: &crate::font::Fonts, i: &skyward_info::DeviceInfo) -> usize {
+        app.frame(f, i).hits.iter().filter(|h| h.action == Action::Open(Screen::Files)).count()
+    }
+
+    /// 一条不少：分类里、置顶里、与「其他」里加起来正好是全部条目。
+    fn held_entries(app: &App) -> usize {
+        app.state.home_top.len() + app.state.home_rest.len() + app.state.home_sections.iter().map(|s| s.entries.len()).sum::<usize>()
+    }
+
+    #[test]
+    fn the_others_section_folds_and_unfolds_from_its_heading() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Home, &f, &i);
+        assert_eq!(files_rows(&mut app, &f, &i), 1, "「其他」展开着，文件管理那一行在");
+        tap(&mut app, &f, &i, Action::HomeFoldRest);
+        assert!(app.state.home_rest_collapsed, "折起来了");
+        assert_eq!(files_rows(&mut app, &f, &i), 0, "折起来就只剩栏名");
+        tap(&mut app, &f, &i, Action::HomeFoldRest);
+        assert!(!app.state.home_rest_collapsed);
+        assert_eq!(files_rows(&mut app, &f, &i), 1, "再点一下又摊开");
+    }
+
+    #[test]
+    fn a_new_section_takes_the_entries_it_is_given_and_a_deleted_one_gives_them_back() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::HomeOrder, &f, &i);
+        // 第一次用：内置的「刷机与备份」只在显示层，动一下才落进 state。
+        tap(&mut app, &f, &i, Action::HomePick(Entry::Files));
+        assert_eq!(app.state.home_sections.len(), 1, "内置那一栏落进了 state");
+        assert!(!app.state.home_rest.contains(&Entry::Install), "落进去的条目不再留在「其他」");
+        tap(&mut app, &f, &i, Action::HomeNewSection);
+        assert_eq!(app.screen(), Screen::HomeSection, "新建一栏先给它起名字");
+        app.state.section_name = "日常".into();
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        let at = app.state.home_sections.len() - 1;
+        assert_eq!(app.state.home_sections[at].name, "日常");
+        // 新建完直接进它自己的页，好马上把条目收进来。
+        assert_eq!(app.screen(), Screen::HomeSectionView);
+        tap(&mut app, &f, &i, Action::HomeAdopt(Entry::Files));
+        assert_eq!(app.state.home_sections[at].entries, vec![Entry::Files]);
+        assert!(!app.state.home_rest.contains(&Entry::Files), "收进分类的条目不再留在「其他」");
+        // 删掉这一栏：条目回到「其他」，一条不丢。
+        tap(&mut app, &f, &i, Action::HomeDeleteSection(at));
+        assert_eq!(app.state.home_sections.len(), at);
+        assert!(app.state.home_rest.contains(&Entry::Files), "回到「其他」");
+        assert_eq!(app.screen(), Screen::HomeOrder, "在二级页删的，退回去");
+        assert_eq!(held_entries(&app), crate::app::default_rest().len(), "一条不少");
+    }
+
+    #[test]
+    fn an_entry_picked_up_lands_where_it_is_put_down() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::HomeOrder, &f, &i);
+        tap(&mut app, &f, &i, Action::HomePick(Entry::Files));
+        assert_eq!(app.state.home_pick, Some(Entry::Files));
+        tap(&mut app, &f, &i, Action::HomePlace(Entry::Wlan));
+        let rest = &app.state.home_rest;
+        let at_files = rest.iter().position(|e| *e == Entry::Files).unwrap();
+        let at_wlan = rest.iter().position(|e| *e == Entry::Wlan).unwrap();
+        assert_eq!(at_files + 1, at_wlan, "文件管理落在无线网络前面一格");
+        assert!(app.state.home_pick.is_none(), "放下以后不再拎着");
+        assert_eq!(held_entries(&app), crate::app::default_rest().len(), "拎来拎去不会把条目弄丢");
+    }
+
+    /// 名字页点输入框不该把整个恢复界面停掉：原来那里是 `expect`，一点就 panic
+    /// （2026-11-28 修的闪退）。
+    #[test]
+    fn touching_the_field_on_a_name_page_leaves_the_page_standing() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::HomeOrder, &f, &i);
+        tap(&mut app, &f, &i, Action::EntryRename(Entry::Files));
+        assert_eq!(app.screen(), Screen::EntryName);
+        tap(&mut app, &f, &i, Action::TypeInto(Field::Name));
+        assert_eq!(app.screen(), Screen::EntryName, "点输入框什么也不该发生");
+        app.state.entry_name = "我的文件".into();
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert_eq!(app.state.entry_names.get("files").map(String::as_str), Some("我的文件"));
+        assert_eq!(app.screen(), Screen::HomeOrder);
+        // 留空就是回它自己的名字。
+        tap(&mut app, &f, &i, Action::EntryRename(Entry::Files));
+        app.state.entry_name.clear();
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert!(app.state.entry_names.is_empty(), "名字清掉，回默认");
+    }
+
+    #[test]
+    fn the_home_page_wears_the_name_it_was_given() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Home, &f, &i);
+        let before = app.frame(&f, &i).title.to_string();
+        tap(&mut app, &f, &i, Action::EditHomeTitle);
+        assert_eq!(app.screen(), Screen::HomeTitle);
+        tap(&mut app, &f, &i, Action::TypeInto(Field::Name));
+        app.state.home_title_edit = "我的手机".into();
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert_eq!(app.screen(), Screen::Home);
+        assert_eq!(app.state.home_title, "我的手机");
+        assert_eq!(app.frame(&f, &i).title.to_string(), "我的手机", "顶上那个大字跟着变");
+        assert_ne!(before, "我的手机");
+        // 留空就回到出厂那个字。
+        tap(&mut app, &f, &i, Action::EditHomeTitle);
+        app.state.home_title_edit.clear();
+        tap(&mut app, &f, &i, Action::Type(Cap::Enter));
+        assert_eq!(app.frame(&f, &i).title.to_string(), before);
+    }
+
+    #[test]
+    fn the_layout_page_writes_reads_and_lays_one_over_the_pages() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Layout, &f, &i);
+        assert_eq!(tap(&mut app, &f, &i, Action::ExportLayout), [Effect::ExportLayout]);
+        app.layout_exported(Ok("/sdcard/Skyward/layout-20261128-1200.json".into()), 10);
+        let file = crate::layout::File {
+            path: "/sdcard/Skyward/layout-20261128-1200.json".into(),
+            name: "layout-20261128-1200.json".into(),
+            bytes: 512,
+        };
+        app.layouts_listed(Ok(vec![file.clone()]), 20);
+        assert_eq!(
+            tap(&mut app, &f, &i, Action::ImportLayout(0)),
+            [Effect::ImportLayout { path: file.path.clone() }],
+            "点存储里那一条就按它改"
+        );
+        // 导入：文件里那一份按上去。
+        let mut held = crate::app::State::default();
+        held.home_title = "槑".into();
+        held.tiles = vec![crate::app::Tile::Wlan, crate::app::Tile::Layout];
+        let text = crate::layout::Layout::of(&held).to_json();
+        crate::layout::Layout::from_json(&text).expect("reads").apply(&mut app.state);
+        assert_eq!(app.state.home_title, "槑");
+        assert_eq!(app.state.tiles, vec![crate::app::Tile::Wlan, crate::app::Tile::Layout]);
+    }
+
+    #[test]
+    fn the_browse_page_lists_the_folder_it_is_shown() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Layout, &f, &i);
+        tap(&mut app, &f, &i, Action::LayoutBrowseImport);
+        assert_eq!(app.screen(), Screen::LayoutBrowse);
+        assert_eq!(app.state.layout_dir.path, "/sdcard/Skyward", "导入从存储的 Skyward 文件夹起");
+        // 运行时把目录读回来：落在这一页自己那一格，不是文件管理的。
+        let folder = crate::app::FileRow {
+            name: "子目录".into(),
+            kind: crate::app::FileKind::Folder { items: None },
+            size: 0,
+            modified: 0,
+            mode: 0o040755,
+            uid: 0,
+            gid: 0,
+        };
+        let file = crate::app::FileRow {
+            name: "layout-20261128-1200.json".into(),
+            kind: crate::app::FileKind::File,
+            size: 512,
+            modified: 0,
+            mode: 0o100644,
+            uid: 0,
+            gid: 0,
+        };
+        app.set_files("/sdcard/Skyward".into(), Ok(vec![folder, file]), 0);
+        assert!(app.state.files.entries.as_ref().is_ok_and(|v| v.is_empty()), "文件管理那一格没被写进来");
+        assert_eq!(app.state.layout_dir.entries.as_ref().map(|v| v.len()), Ok(2), "这一页读到了");
+        assert_eq!(
+            tap(&mut app, &f, &i, Action::LayoutPick(0)),
+            [Effect::ImportLayout { path: "/sdcard/Skyward/layout-20261128-1200.json".into() }],
+            "点那条 .json 就按它改"
+        );
+        assert_eq!(tap(&mut app, &f, &i, Action::LayoutUp), [Effect::ReadDir("/sdcard".into())], "上一层");
     }
 }

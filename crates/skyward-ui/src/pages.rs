@@ -8,6 +8,7 @@ use crate::app::{
     USB_DRIVE_WANTED, WIPES, installs, listed, starting,
 };
 use crate::app::{is_newer, KernelSuEnd, KernelSuJob};
+use crate::app::{default_sections, rest_is_default, Entry, Section};
 use crate::canvas::Canvas;
 use crate::color::Rgba;
 use crate::editor;
@@ -91,7 +92,15 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::Restore => restore(cx),
         Screen::RestoreBackup => restore_backup(cx),
         Screen::BackupJob => backup_job(cx),
-        Screen::Advanced => advanced(cx),
+        Screen::HomeOrder => home_order(cx),
+        Screen::HomeSection => home_section(cx),
+        Screen::HomeIcon => home_icon(cx),
+        Screen::EntryName => entry_name(cx),
+        Screen::HomeTitle => home_title(cx),
+        Screen::Layout => layout(cx),
+        Screen::LayoutBrowse => layout_browse(cx),
+        Screen::HomeSectionView => home_section_view(cx),
+        Screen::FileTransfer => file_transfer(cx),
         Screen::Modules => modules(cx),
         Screen::DataApps => data_apps(cx),
         Screen::SystemApps => system_apps(cx),
@@ -299,7 +308,6 @@ const WLAN_AUTO: Text = ["WiFi 自动连接", "WiFi 自動連線", "WLAN on at s
 const WLAN_KEEP: Text = ["记住 WiFi 密码", "記住 WiFi 密碼", "Keep the password"];
 const DECRYPT: Text = ["解密", "解密", "Decrypt"];
 const CHARGE: Text = ["充电", "充電", "Charging"];
-const ADVANCED: Text = ["高级工具", "進階工具", "Advanced"];
 const SETTINGS: Text = ["选项设置", "選項設定", "Options"];
 const REBOOT: Text = ["重启系统", "重新啟動", "Reboot"];
 const ABOUT: Text = ["关于本机", "關於手機", "About phone"];
@@ -407,13 +415,7 @@ pub fn home(cx: &Ctx) -> Frame {
     // the phone was given, with the model and the system under it, and the page
     // of details a tap away. It waits for the partition it is kept on to be
     // open; before that neither the picture nor the name is there.
-    // The model and the codename only: the version is on the page the row opens,
-    // and inside the row it runs past the end.
     let detail = format!("{} \u{b7} {}", i.model, i.codename);
-    // Under the name, what the phone answers at a glance: the slot it runs
-    // from, whether the data partition is open, the room left on it, and the
-    // charge it is taking. Only the ones it has answered for stand, so the band
-    // never shows a figure that is not there.
     let mut readouts: Vec<widgets::Readout> = Vec::new();
     if let Some(slot) = i.slot {
         readouts.push(widgets::Readout::new(slot.letter(), l.pick(SLOT_NOW)));
@@ -422,9 +424,7 @@ pub fn home(cx: &Ctx) -> Frame {
     if let Some(free) = i.storage.free {
         readouts.push(widgets::Readout::new(fmt::gb(free), l.pick(FREE_SPACE)));
     }
-    // 电池那一格：电量在上，下排写它此刻在做什么。插着线的时候功率跟在状态后面
-    // —— `充电中 · 7.9W`，与充电页「现在」那个数字同源；充到 100% 也照样给，
-    // 满电还在补的那点功率一样看得见。拔了线才只剩「电池电量」。
+    // 电池那一格：电量在上，下排写它此刻在做什么。
     if let Some(b) = &i.battery {
         let label = if b.charging() {
             let tenths = b.watts().map(|w| (w * 10.0).round() as u32).filter(|t| *t > 0);
@@ -440,101 +440,954 @@ pub fn home(cx: &Ctx) -> Frame {
     match &s.device_name {
         Some(name) => {
             let account = widgets::account_card(&mut c, t, f, y, name, Some(&detail), s.avatar.as_ref(), &readouts);
-            // Every rect the card gave back answers: the name's row and the
-            // band of readings under it are one control, so wherever on the
-            // box a finger lands, the details open.
             out.extend(account.rows.iter().map(|r| Hit { rect: *r, action: Action::Open(Screen::About) }));
             y = account.bottom + t.m.card_gap;
         }
-        // Nothing of the phone itself read yet: the model alone stands in, and
-        // a tap still goes to the details.
         None => {
             let card = widgets::account_card(&mut c, t, f, y, &i.model, Some(&i.codename), None, &readouts);
             out.extend(card.rows.iter().map(|r| Hit { rect: *r, action: Action::Open(Screen::About) }));
             y = card.bottom + t.m.card_gap;
         }
     }
-    // What asks for something to be done stands on its own under it: a battery
-    // too low to install on, an update waiting to merge, a restart into the
-    // slot the system does not run from now.
     if !rows.is_empty() {
         let list = widgets::list(&mut c, t, f, y, &rows);
         out.extend(list.rows.iter().zip(&opens).filter_map(|(&rect, open)| open.map(|action| Hit { rect, action })));
         y = list.bottom + t.m.card_gap;
     }
-    // On a phone whose WLAN the recovery brings up, the WLAN comes first
-    // under the device, as on the stock settings home; with it, where the
-    // phone can hold a second system, the two systems.
-    // The network the phone is joined to and the file manager come first.
-    let mut first_rows = Vec::new();
-    let mut first_opens = Vec::new();
-    if let Some(w) = &cx.state.wlan {
-        first_rows.push(Row::new(l.pick(WLAN)).icon(BLUE, Icon::Wlan).trail(Trail::Value(fmt::wlan_value(l, w))));
-        first_opens.push(Action::Open(Screen::Wlan));
+    // 首页：置顶的散条 → 各分类 → 「其他」。每栏是一张卡，第一行是栏名，
+    // 点一下就折叠/展开（折叠状态记在设置里）。没有分类时置顶与「其他」
+    // 合成一张卡（2026-11-28，取自 skyward-pudding v0.5.13）。
+    let systems_text = systems_value(cx);
+    let wlan_text = cx.state.wlan.as_ref().map(|w| fmt::wlan_value(l, w));
+    let skyward_text = skyward_value(cx);
+    let update_text = Some(update_value(cx));
+    let offered = |entries: &[Entry]| -> Vec<Entry> { entries.iter().copied().filter(|entry| home_offers(cx, *entry)).collect() };
+    // 第一次用（设置里没有任何分栏）：显示层给一栏内置的「刷机与备份」。
+    let fresh = cx.state.home_sections.is_empty() && cx.state.home_top.is_empty() && rest_is_default(&cx.state.home_rest);
+    // 只有第一次用（显示层补一栏内置分类）才需要自己造一份；其余情况直接借用
+    // `State` 里的，首页是常驻页，滑一下不该克隆整张布局。
+    let (sections, top_all, rest_all): (std::borrow::Cow<[Section]>, std::borrow::Cow<[Entry]>, std::borrow::Cow<[Entry]>) = if fresh {
+        let mut rest = cx.state.home_rest.clone();
+        rest.retain(|entry| !matches!(entry, Entry::Install | Entry::Backup | Entry::Restore));
+        (std::borrow::Cow::Owned(default_sections(l)), std::borrow::Cow::Borrowed(&[]), std::borrow::Cow::Owned(rest))
+    } else {
+        (
+            std::borrow::Cow::Borrowed(&cx.state.home_sections[..]),
+            std::borrow::Cow::Borrowed(&cx.state.home_top[..]),
+            std::borrow::Cow::Borrowed(&cx.state.home_rest[..]),
+        )
+    };
+    if sections.is_empty() {
+        let loose = offered(&top_all.iter().chain(rest_all.iter()).copied().collect::<Vec<_>>());
+        if !loose.is_empty() {
+            let rows: Vec<Row> = loose
+                .iter()
+                .map(|entry| home_row(*entry, l, &cx.state.entry_names, wlan_text, systems_text.as_deref(), skyward_text, cx.state.file_transfer, update_text))
+                .collect();
+            let list = widgets::list(&mut c, t, f, y, &rows);
+            out.extend(hits(&list.rows, &loose.iter().map(|entry| entry.action()).collect::<Vec<_>>()));
+            y = list.bottom;
+        }
+    } else {
+        let top = offered(top_all.as_ref());
+        if !top.is_empty() {
+            let rows: Vec<Row> = top
+                .iter()
+                .map(|entry| home_row(*entry, l, &cx.state.entry_names, wlan_text, systems_text.as_deref(), skyward_text, cx.state.file_transfer, update_text))
+                .collect();
+            let list = widgets::list(&mut c, t, f, y, &rows);
+            out.extend(hits(&list.rows, &top.iter().map(|entry| entry.action()).collect::<Vec<_>>()));
+            y = list.bottom + t.m.card_gap;
+        }
+        // 「其他」也是一栏：位置由 `home_rest_at` 说，删掉的分类的条目都落到
+        // 这里，所以它能上下挪，却不能删。
+        let rest_at = cx.state.home_rest_at.unwrap_or(sections.len()).min(sections.len());
+        for (i, section) in sections.iter().enumerate() {
+            if i == rest_at {
+                let after = rest_card(&mut c, t, f, l, y, &mut out, cx.state, wlan_text, systems_text.as_deref(), skyward_text, update_text, offered(rest_all.as_ref()));
+                if after > y {
+                    y = after + t.m.card_gap;
+                }
+            }
+            let entries = offered(&section.entries);
+            let name: String = if section.name.chars().count() > 14 {
+                format!("{}…", section.name.chars().take(14).collect::<String>())
+            } else {
+                section.name.clone()
+            };
+            let title = if entries.is_empty() {
+                format!("{} · {}", name, l.pick(["空", "空", "empty"]))
+            } else {
+                format!("{} · {}", name, entries.len())
+            };
+            y = section_card(
+                &mut c,
+                t,
+                f,
+                l,
+                y,
+                &mut out,
+                &cx.state.entry_names,
+                wlan_text,
+                systems_text.as_deref(),
+                skyward_text,
+                cx.state.file_transfer,
+                update_text,
+                &title,
+                section.icon,
+                entries,
+                section.collapsed,
+                Action::HomeFoldSection(i),
+            ) + t.m.card_gap;
+        }
+        if rest_at >= sections.len() {
+            let after = rest_card(&mut c, t, f, l, y, &mut out, cx.state, wlan_text, systems_text.as_deref(), skyward_text, update_text, offered(rest_all.as_ref()));
+            if after > y {
+                y = after;
+            }
+        }
     }
-    first_rows.push(Row::new(l.pick(FILES)).icon(BLUE, Icon::Folder));
-    first_opens.push(Action::Open(Screen::Files));
-    // 模块管理紧挨着文件管理：装模块就是往 data 里放文件，放在这里顺手。
-    first_rows.push(Row::new(l.pick(MODULES)).icon(BLUE, Icon::Layers));
-    first_opens.push(Action::Open(Screen::Modules));
-    first_rows.push(Row::new(l.pick(DATA_APPS)).icon(PURPLE, Icon::Layers));
-    first_opens.push(Action::Open(Screen::DataApps));
-    let first = widgets::list(&mut c, t, f, y, &first_rows);
-    out.extend(hits(&first.rows, &first_opens));
-    y = first.bottom + t.m.card_gap;
-    // Then the three rows that put something on the phone or take it off.
-    let tools = widgets::list(&mut c, t, f, y, &[
-        Row::new(l.pick(["安装刷机", "安裝刷機", "Install"])).icon(GREEN, Icon::Install),
-        Row::new(l.pick(["创建备份", "建立備份", "Backup"])).icon(BLUE, Icon::Backup),
-        Row::new(l.pick(["恢复备份", "還原備份", "Restore"])).icon(PURPLE, Icon::Restore),
+    // However little it holds, the page scrolls far enough to reach its foot.
+    let height = fitted(t, y).max(t.m.h);
+    // 顶上那个大字：主人起过名字就用它。
+    let title = match cx.state.home_title.is_empty() {
+        true => std::borrow::Cow::Borrowed(HOME_TITLE),
+        false => std::borrow::Cow::Owned(cx.state.home_title.clone()),
+    };
+    Frame { back: false, ..Frame::new(t, c.crop_height(height), out, title, t.m.content_top) }
+}
+
+/// 首页上的一栏：第一行是栏名（点它折叠），后面是条目（展开时）。
+/// 栏目头统一是「名称 · 数量」+ 右侧一枚折角（展开朝上、折叠朝下），整行可点。
+#[allow(clippy::too_many_arguments)]
+fn section_card<'a>(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &Fonts,
+    l: Lang,
+    y: f32,
+    out: &mut Vec<Hit>,
+    names: &'a std::collections::BTreeMap<String, String>,
+    wlan: Option<&'a str>,
+    systems: Option<&'a str>,
+    skyward: Option<&'a str>,
+    file_transfer: bool,
+    update: Option<&'a str>,
+    title: &str,
+    icon: Icon,
+    entries: Vec<Entry>,
+    collapsed: bool,
+    fold: Action,
+) -> f32 {
+    let mut rows: Vec<Row> = vec![Row::new(title).icon(BLUE, icon)];
+    if !collapsed {
+        rows.extend(entries.iter().map(|entry| home_row(*entry, l, names, wlan, systems, skyward, file_transfer, update)));
+    }
+    let list = widgets::list(c, t, f, y, &rows);
+    out.push(Hit { rect: list.rows[0], action: fold });
+    let m = &t.m;
+    let d = m.dp(30.0);
+    let bx = list.rows[0].x + list.rows[0].w - m.inner - d / 2.0;
+    let by = list.rows[0].y + list.rows[0].h / 2.0;
+    widgets::fold_button(c, t, bx, by, d, collapsed);
+    if !collapsed {
+        out.extend(hits(&list.rows[1..], &entries.iter().map(|entry| entry.action()).collect::<Vec<_>>()));
+    }
+    list.bottom
+}
+
+/// 「其他」这一栏：删掉的分类的条目都落到这里，所以它在排序页能上下挪，
+/// 却不能删。空着就什么都不画。
+#[allow(clippy::too_many_arguments)]
+fn rest_card<'a>(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &Fonts,
+    l: Lang,
+    y: f32,
+    out: &mut Vec<Hit>,
+    state: &State,
+    wlan: Option<&'a str>,
+    systems: Option<&'a str>,
+    skyward: Option<&'a str>,
+    update: Option<&'a str>,
+    entries: Vec<Entry>,
+) -> f32 {
+    if entries.is_empty() {
+        return y;
+    }
+    let name = if state.home_rest_name.is_empty() {
+        l.pick(["其他", "其他", "Others"]).to_string()
+    } else {
+        state.home_rest_name.clone()
+    };
+    let title = format!("{} · {}", name, entries.len());
+    section_card(c, t, f, l, y, out, &state.entry_names, wlan, systems, skyward, state.file_transfer, update, &title, Icon::Folder, entries, state.home_rest_collapsed, Action::HomeFoldRest)
+}
+
+/// 这一条在现在的手机上摆不摆（没有 WLAN、没有双系统、没有更新时不摆）。
+fn home_offers(cx: &Ctx, entry: Entry) -> bool {
+    match entry {
+        Entry::Wlan => cx.state.wlan.is_some(),
+        Entry::Systems => cx.state.offers(Screen::Systems),
+        Entry::SkywardUpdate => cx.state.offers(Screen::SkywardUpdate),
+        _ => true,
+    }
+}
+
+/// 首页每一条的图标颜色。
+fn home_color(entry: Entry) -> Rgba {
+    match entry {
+        Entry::Wlan | Entry::Files | Entry::Backup | Entry::SkywardUpdate | Entry::Decrypt | Entry::Serve | Entry::FileTransfer => BLUE,
+        Entry::Modules | Entry::DataApps | Entry::Restore | Entry::Systems | Entry::Root | Entry::Usb | Entry::Relabel => PURPLE,
+        Entry::Install | Entry::Charge | Entry::Fetch | Entry::Update => GREEN,
+        Entry::Settings | Entry::HomeOrder | Entry::Terminal | Entry::Partitions | Entry::Mount => SLATE,
+        Entry::Reboot | Entry::Logs => ORANGE,
+        Entry::Wipe | Entry::Avb | Entry::Filesystems | Entry::Record | Entry::Shutdown => RED,
+        Entry::Tasks => BLUE,
+    }
+}
+
+/// 一行首页条目：名字、图标；WLAN／第二系统／版本更新／文件传输带值。
+fn home_row<'a>(
+    entry: Entry,
+    l: Lang,
+    names: &'a std::collections::BTreeMap<String, String>,
+    wlan: Option<&'a str>,
+    systems: Option<&'a str>,
+    skyward: Option<&'a str>,
+    file_transfer: bool,
+    update: Option<&'a str>,
+) -> Row<'a> {
+    let mut row = Row::new(entry.shown(l, names)).icon(home_color(entry), entry.icon());
+    // 文件传输点进去再开关：这一行只露出它现在开着还是关着。
+    if entry == Entry::FileTransfer {
+        let text = if file_transfer {
+            l.pick(["开", "開", "On"])
+        } else {
+            l.pick(["关", "關", "Off"])
+        };
+        return row.trail(Trail::Value(text));
+    }
+    let value = match entry {
+        Entry::Wlan => wlan,
+        Entry::Systems => systems,
+        Entry::SkywardUpdate => skyward,
+        Entry::Update => update,
+        _ => None,
+    };
+    if let Some(value) = value {
+        row = row.trail(Trail::Value(value));
+    }
+    row
+}
+
+/// 首页分栏：一栏一栏列出来，点一条拎起来，再点一条放到它前面，或点栏标题
+/// 放到那栏末尾；栏标题没拎东西时点开是改名/删除；最下面是新建栏与恢复默认。
+pub fn home_order(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = m.content_top;
+    let hint = l.pick([
+        "点一条拎起来，再点一条放到它前面；点栏标题放到那栏末尾。",
+        "點一條拎起來，再點一條放到它前面；點欄標題放到那欄末尾。",
+        "Tap an entry to pick it up, then tap where it goes; tap a heading to put it at that section's end.",
     ]);
-    out.extend(hits(&tools.rows, &[
-        Action::Open(Screen::Install),
-        Action::Open(Screen::Backup),
-        Action::Open(Screen::Restore),
+    let pick = s.home_pick;
+    // 第一次用的时候，内置的「刷机与备份」也要在排序页里看得见、动得了。
+    let fresh = s.home_sections.is_empty() && s.home_top.is_empty() && rest_is_default(&s.home_rest);
+    let (sections, top_list) = if fresh {
+        let mut rest = s.home_rest.clone();
+        rest.retain(|entry| !matches!(entry, Entry::Install | Entry::Backup | Entry::Restore));
+        (default_sections(l), Vec::new())
+    } else {
+        (s.home_sections.clone(), s.home_top.clone())
+    };
+
+    // 单独放在首页的条目（最上面那一块）。点小标题把拎着的那条放上来。
+    {
+        let before = y;
+        y = widgets::section(&mut c, t, f, y, l.pick(["单独放在首页", "單獨放在首頁", "Loose on Home"]));
+        out.push(Hit {
+            rect: Rect::new(m.margin, before, m.w as f32 - m.margin * 2.0, m.section_block),
+            action: Action::HomeToTop,
+        });
+        if top_list.is_empty() {
+            y = widgets::footnote(&mut c, t, f, y, l.pick(["拎一条起来，点这里放到最上面", "拎一條起來，點這裡放到最上面", "Pick an entry, then tap here to put it on top"]));
+        } else {
+            let rows: Vec<Row> = top_list
+                .iter()
+                .map(|entry| {
+                    let mut row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon());
+                    if pick == Some(*entry) {
+                        row = row.subtitle(hint);
+                    }
+                    row
+                })
+                .collect();
+            let list = widgets::list(&mut c, t, f, y, &rows);
+            let actions: Vec<Action> = top_list
+                .iter()
+                .map(|entry| match pick {
+                    Some(picked) if picked == *entry => Action::HomePick(*entry),
+                    Some(_) => Action::HomePlace(*entry),
+                    None => Action::HomePick(*entry),
+                })
+                .collect();
+            out.extend(hits(&list.rows, &actions));
+            pencil_buttons(&mut c, t, &mut out, &list.rows, &top_list);
+            y = list.bottom;
+        }
+    }
+
+    // 每一栏：小标题（点它就是「放进这一栏」或进它的二级页）+ 一张条目卡。
+    // 分类画成标题而不是一张卡：卡挨着卡会粘在一起，标题天然分开。
+    let rest_at = s.home_rest_at.unwrap_or(sections.len()).min(sections.len());
+    for (i, section) in sections.iter().enumerate() {
+        if i == rest_at {
+            y = order_rest_block(&mut c, t, f, l, y, &mut out, s, pick, hint) + m.card_gap;
+        }
+        let before = y;
+        // 标题带上条目数；右边留四个圆钮。
+        let count = section.entries.len();
+        let label = if count == 0 {
+            format!("{} · {}", section.name, l.pick(["空", "空", "empty"]))
+        } else {
+            format!("{} · {count}", section.name)
+        };
+        y = widgets::section(&mut c, t, f, y, &label);
+        out.push(Hit {
+            rect: Rect::new(m.margin, before, m.w as f32 - m.margin * 2.0 - m.dp(56.0), m.section_block),
+            action: match pick {
+                Some(_) => Action::HomeToSection(Some(i)),
+                None => Action::HomeOpenSection(i),
+            },
+        });
+        // 一栏四个动作排成一排，同一尺寸的圆钮：改名、上移、下移、删除。
+        let d = m.dp(30.0);
+        let step = m.dp(38.0);
+        let cy = before + m.section_block / 2.0;
+        let right = m.w as f32 - m.margin - d / 2.0;
+        let acts = [
+            (Action::HomeEditSection(i), Icon::Pencil),
+            (Action::HomeShiftSection { at: i, up: true }, Icon::Sort),
+            (Action::HomeShiftSection { at: i, up: false }, Icon::Sort),
+            (Action::HomeDeleteSection(i), Icon::Wipe),
+        ];
+        for (k, (action, icon)) in acts.into_iter().enumerate() {
+            let bx = right - (3 - k) as f32 * step;
+            let danger = matches!(action, Action::HomeDeleteSection(_));
+            widgets::icon_button(&mut c, t, bx, cy, d, if danger { t.pal.danger } else { t.pal.subtitle }, icon);
+            out.push(Hit { rect: Rect::new(bx - d / 2.0 - m.dp(6.0), cy - d / 2.0 - m.dp(6.0), d + m.dp(12.0), d + m.dp(12.0)), action });
+        }
+        if section.entries.is_empty() {
+            y = widgets::footnote(&mut c, t, f, y, l.pick(["这一栏还是空的", "這一欄還是空的", "Empty for now"]));
+            continue;
+        }
+        let rows: Vec<Row> = section
+            .entries
+            .iter()
+            .map(|entry| {
+                let mut row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon());
+                if pick == Some(*entry) {
+                    row = row.subtitle(hint);
+                }
+                row
+            })
+            .collect();
+        let list = widgets::list(&mut c, t, f, y, &rows);
+        let actions: Vec<Action> = section
+            .entries
+            .iter()
+            .map(|entry| match pick {
+                Some(picked) if picked == *entry => Action::HomePick(*entry),
+                Some(_) => Action::HomePlace(*entry),
+                None => Action::HomePick(*entry),
+            })
+            .collect();
+        out.extend(hits(&list.rows, &actions));
+        pencil_buttons(&mut c, t, &mut out, &list.rows, &section.entries);
+        y = list.bottom;
+    }
+
+    // 「其他」摆在 `rest_at` 说的位置；它不能删，只能上下挪。
+    if rest_at >= sections.len() {
+        y = order_rest_block(&mut c, t, f, l, y, &mut out, s, pick, hint);
+    }
+
+    // 首页标题、布局备份、新建一栏、恢复默认。
+    let more = widgets::list(
+        &mut c,
+        t,
+        f,
+        y + m.card_gap,
+        &[
+            Row::new(l.pick(["首页标题", "首頁標題", "Home title"])).icon(SLATE, Icon::Pencil).trail(Trail::Arrow),
+            Row::new(l.pick(["布局备份", "佈局備份", "Layout backup"])).icon(PURPLE, Icon::Backup).trail(Trail::Arrow),
+            Row::new(l.pick(["新建分类", "新增分類", "New section"])).icon(BLUE, Icon::Layers).trail(Trail::Arrow),
+            Row::new(l.pick(["恢复默认顺序", "恢復預設順序", "Restore the default order"])).tint(t.pal.danger),
+        ],
+    );
+    out.extend(hits(&more.rows, &[
+        Action::EditHomeTitle,
+        Action::Open(Screen::Layout),
+        Action::HomeNewSection,
+        Action::HomeReset,
     ]));
-    y = tools.bottom + t.m.card_gap;
-    // Where the phone holds a second system, it comes first here.
-    let mut system_rows = Vec::new();
-    let mut system_opens = Vec::new();
-    let starts = systems_value(cx);
-    if cx.state.offers(Screen::Systems) {
-        let row = Row::new(l.pick(DUAL_BOOT)).icon(PURPLE, Icon::Systems);
-        system_rows.push(match &starts {
-            Some(value) => row.trail(Trail::Value(value)),
-            None => row,
+    let note = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        more.bottom,
+        l.pick([
+            "点栏标题可以改名或删除；删掉的栏里的条目回到「其他」。不支持的入口在首页不显示，但顺序里仍占着位置。",
+            "點欄標題可以改名或刪除；刪掉的欄裡的條目回到「其他」。不支援的入口在首頁不顯示，但順序裡仍佔著位置。",
+            "Tap a heading to rename or remove it; its entries go back to Others. Entries the phone has none of are left out, their places kept.",
+        ]),
+    );
+    Frame::new(t, fit(c, t, note), out, l.pick(["首页分类", "首頁分類", "Home sections"]), m.content_top)
+}
+
+/// 排序页每一条右边一枚铅笔：点它进改名页；整行仍然是拎起来 / 放下。
+fn pencil_buttons(c: &mut Canvas, t: &Theme, out: &mut Vec<Hit>, rows: &[Rect], entries: &[Entry]) {
+    let m = &t.m;
+    let d = m.dp(30.0);
+    for (k, row) in rows.iter().enumerate() {
+        let cx = row.x + row.w - m.inner - d / 2.0;
+        let cy = row.y + row.h / 2.0;
+        widgets::icon_button(c, t, cx, cy, d, t.pal.subtitle, Icon::Pencil);
+        out.push(Hit {
+            rect: Rect::new(cx - d / 2.0 - m.dp(6.0), cy - d / 2.0 - m.dp(6.0), d + m.dp(12.0), d + m.dp(12.0)),
+            action: Action::EntryRename(entries[k]),
         });
-        system_opens.push(Action::Open(Screen::Systems));
     }
-    // 充电不在这里：它挪进了高级工具，排在录屏下面。
-    system_rows.push(Row::new(l.pick(ADVANCED)).icon(SLATE, Icon::More));
-    system_opens.push(Action::Open(Screen::Advanced));
-    system_rows.push(Row::new(l.pick(SETTINGS)).icon(SLATE, Icon::Gear));
-    system_opens.push(Action::Open(Screen::Settings));
-    let system = widgets::list(&mut c, t, f, y, &system_rows);
-    out.extend(hits(&system.rows, &system_opens));
-    // At the foot: rebooting, wiping and this recovery's own update.
-    let mut footer_rows = Vec::new();
-    let mut footer_opens = Vec::new();
-    let target = l.pick(REBOOT_TARGETS[cx.state.reboot].0);
-    footer_rows.push(Row::new(l.pick(REBOOT)).icon(ORANGE, Icon::Power).trail(Trail::Value(target)));
-    footer_opens.push(Action::Open(Screen::Reboot));
-    footer_rows.push(Row::new(l.pick(["清除数据", "清除資料", "Wipe data"])).icon(RED, Icon::Wipe));
-    footer_opens.push(Action::Open(Screen::Wipe));
-    if cx.state.offers(Screen::SkywardUpdate) {
-        let row = Row::new(l.pick(SKYWARD_UPDATE)).icon(BLUE, Icon::Install);
-        footer_rows.push(match skyward_value(cx) {
-            Some(value) => row.trail(Trail::Value(value)),
-            None => row,
+}
+
+/// 排序页上的「其他」：标题（点它把拎着的条目放进来）、改名与上下挪，以及
+/// 它里面的条目。它不能删——删掉的分类的条目都落到这里。
+#[allow(clippy::too_many_arguments)]
+fn order_rest_block(
+    c: &mut Canvas,
+    t: &Theme,
+    f: &Fonts,
+    l: Lang,
+    mut y: f32,
+    out: &mut Vec<Hit>,
+    s: &State,
+    pick: Option<Entry>,
+    hint: &str,
+) -> f32 {
+    let m = &t.m;
+    let before = y;
+    let rest_name = if s.home_rest_name.is_empty() {
+        l.pick(["其他", "其他", "Others"]).to_string()
+    } else {
+        s.home_rest_name.clone()
+    };
+    y = widgets::section(c, t, f, y, &format!("{rest_name} · {}", s.home_rest.len()));
+    let d = m.dp(30.0);
+    let step = m.dp(38.0);
+    out.push(Hit {
+        rect: Rect::new(m.margin, before, m.w as f32 - m.margin * 2.0 - step * 3.0, m.section_block),
+        action: Action::HomeToSection(None),
+    });
+    let cy = before + m.section_block / 2.0;
+    let right = m.w as f32 - m.margin - d / 2.0;
+    // 三个钮：改名、上移、下移。没有删除——它是兜底的那一栏。
+    let acts = [
+        (Action::HomeRenameRest, Icon::Pencil),
+        (Action::HomeShiftRest { up: true }, Icon::Sort),
+        (Action::HomeShiftRest { up: false }, Icon::Sort),
+    ];
+    for (k, (action, icon)) in acts.into_iter().enumerate() {
+        let bx = right - (2 - k) as f32 * step;
+        widgets::icon_button(c, t, bx, cy, d, t.pal.subtitle, icon);
+        out.push(Hit {
+            rect: Rect::new(bx - d / 2.0 - m.dp(6.0), cy - d / 2.0 - m.dp(6.0), d + m.dp(12.0), d + m.dp(12.0)),
+            action,
         });
-        footer_opens.push(Action::Open(Screen::SkywardUpdate));
     }
-    let footer = widgets::list(&mut c, t, f, system.bottom + t.m.card_gap, &footer_rows);
-    out.extend(hits(&footer.rows, &footer_opens));
-    // However little it holds, the page scrolls far enough to fold its bar
-    // away.
-    let height = fitted(t, footer.bottom).max(t.m.h);
-    Frame { back: false, ..Frame::new(t, c.crop_height(height), out, HOME_TITLE, t.m.content_top) }
+    if s.home_rest.is_empty() {
+        return widgets::footnote(c, t, f, y, l.pick(["没有剩下的条目", "沒有剩下的條目", "Nothing left over"]));
+    }
+    let rows: Vec<Row> = s
+        .home_rest
+        .iter()
+        .map(|entry| {
+            let mut row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon());
+            if pick == Some(*entry) {
+                row = row.subtitle(hint);
+            }
+            row
+        })
+        .collect();
+    let list = widgets::list(c, t, f, y, &rows);
+    let actions: Vec<Action> = s
+        .home_rest
+        .iter()
+        .map(|entry| match pick {
+            Some(picked) if picked == *entry => Action::HomePick(*entry),
+            Some(_) => Action::HomePlace(*entry),
+            None => Action::HomePick(*entry),
+        })
+        .collect();
+    out.extend(hits(&list.rows, &actions));
+    pencil_buttons(c, t, out, &list.rows, &s.home_rest);
+    list.bottom
+}
+
+/// 某一栏自己的页面：这一栏的条目在这里排序；「其他」里的条目点一下收进来；
+/// 最下面能改名、上下挪、删除（删了条目回「其他」）。
+pub fn home_section_view(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = m.content_top;
+    let title = l.pick(["首页分类", "首頁分類", "Home sections"]);
+    let Some(i) = s.section_view.filter(|i| *i < s.home_sections.len()) else {
+        return Frame::new(t, fit(c, t, y), out, title, m.content_top);
+    };
+    let section = &s.home_sections[i];
+    // 栏名画成页面里的小标题：`Frame` 的标题只收静态字。
+    y = widgets::section_first(&mut c, t, f, y, &section.name);
+    let hint = l.pick([
+        "点一条拎起来，再点一条放到它前面。",
+        "點一條拎起來，再點一條放到它前面。",
+        "Tap an entry to pick it up, then tap where it goes.",
+    ]);
+    let pick = s.home_pick;
+    if section.entries.is_empty() {
+        y = widgets::footnote(
+            &mut c,
+            t,
+            f,
+            y,
+            l.pick([
+                "这一栏还是空的：下面「其他」里的条目点一下就进来。",
+                "這一欄還是空的：下面「其他」裡的條目點一下就進來。",
+                "This section is empty: tap entries under Others to bring them in.",
+            ]),
+        );
+    } else {
+        let rows: Vec<Row> = section
+            .entries
+            .iter()
+            .map(|entry| {
+                let mut row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon());
+                if pick == Some(*entry) {
+                    row = row.subtitle(hint);
+                }
+                row
+            })
+            .collect();
+        let list = widgets::list(&mut c, t, f, y, &rows);
+        let actions: Vec<Action> = section
+            .entries
+            .iter()
+            .map(|entry| match pick {
+                Some(picked) if picked == *entry => Action::HomePick(*entry),
+                Some(_) => Action::HomePlace(*entry),
+                None => Action::HomePick(*entry),
+            })
+            .collect();
+        out.extend(hits(&list.rows, &actions));
+        y = list.bottom;
+    }
+    if !s.home_rest.is_empty() {
+        y = widgets::section(&mut c, t, f, y + m.card_gap, l.pick(["其他里的条目", "其他裡的條目", "Entries in Others"]));
+        let rows: Vec<Row> = s
+            .home_rest
+            .iter()
+            .map(|entry| Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon()).trail(Trail::Arrow))
+            .collect();
+        let list = widgets::list(&mut c, t, f, y, &rows);
+        out.extend(hits(&list.rows, &s.home_rest.iter().map(|entry| Action::HomeAdopt(*entry)).collect::<Vec<_>>()));
+        y = list.bottom;
+    }
+    let more = widgets::list(
+        &mut c,
+        t,
+        f,
+        y + m.card_gap,
+        &[
+            Row::new(l.pick(["改名", "改名", "Rename"])).trail(Trail::Arrow),
+            Row::new(l.pick(["上移这一栏", "上移這一欄", "Move up"])).trail(Trail::Arrow),
+            Row::new(l.pick(["下移这一栏", "下移這一欄", "Move down"])).trail(Trail::Arrow),
+            Row::new(l.pick(["删除这一栏", "刪除這一欄", "Remove this section"])).tint(t.pal.danger),
+        ],
+    );
+    out.extend(hits(&more.rows, &[
+        Action::HomeEditSection(i),
+        Action::HomeShiftSection { at: i, up: true },
+        Action::HomeShiftSection { at: i, up: false },
+        Action::HomeDeleteSection(i),
+    ]));
+    let note = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        more.bottom,
+        l.pick(["删掉的栏里的条目回到「其他」。", "刪掉的欄裡的條目回到「其他」。", "Entries of a section removed go back to Others."]),
+    );
+    Frame::new(t, fit(c, t, note), out, title, m.content_top)
+}
+
+/// 挑栏目图标：全部图标排成格子，点一个就用它。
+pub fn home_icon(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let columns = 5usize;
+    let gap = m.dp(10.0);
+    let size = (m.w as f32 - m.margin * 2.0 - gap * (columns as f32 - 1.0)) / columns as f32;
+    let y = top;
+    for (at, icon) in crate::icons::ALL.iter().enumerate() {
+        let column = at % columns;
+        let row = at / columns;
+        let x = m.margin + column as f32 * (size + gap);
+        let at_y = y + row as f32 * (size + gap);
+        if *icon == s.section_icon {
+            // 选中的那枚加一圈浅底，一眼看得出来。
+            c.fill_round_rect(x - 4.0, at_y - 4.0, size + 8.0, size + 8.0, m.card_radius, t.pal.search);
+        }
+        icons::tile(&mut c, t, x + size / 2.0 - m.dp(24.0), at_y + size / 2.0 - m.dp(24.0), if *icon == s.section_icon { t.pal.accent } else { BLUE }, *icon);
+        out.push(Hit { rect: Rect::new(x, at_y, size, size), action: Action::HomePickIcon(at) });
+    }
+    let rows = crate::icons::ALL.len().div_ceil(columns);
+    let bottom = y + rows as f32 * (size + gap);
+    let note = widgets::footnote(&mut c, t, f, bottom, l.pick(["点一个图标就用它", "點一個圖示就用它", "Tap an icon to use it"]));
+    Frame::new(t, fit(c, t, note), out, l.pick(["选个图标", "選個圖示", "Pick an icon"]), top)
+}
+
+/// 给一栏起名字（新建或改名），改名时还能把它删掉。
+pub fn home_section(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let title = match s.section_edit {
+        Some(_) => l.pick(["给这一栏改名", "給這一欄改名", "Rename the section"]),
+        None => l.pick(["新建分类", "新增分類", "New section"]),
+    };
+    let y = widgets::section_first(&mut c, t, f, top, l.pick(["名字", "名字", "Name"]));
+    let (below, caret) = widgets::text_field(&mut c, t, f, y, &s.section_name);
+    out.push(Hit {
+        rect: Rect::new(m.margin, y, m.w as f32 - m.margin * 2.0, m.dp(56.0)),
+        action: Action::TypeInto(Field::Name),
+    });
+    // 图标：点开是全部图标，选一个回来。
+    let icon_row = widgets::list(
+        &mut c,
+        t,
+        f,
+        below + m.card_gap,
+        &[Row::new(l.pick(["图标", "圖示", "Icon"])).icon(BLUE, s.section_icon).trail(Trail::Arrow)],
+    );
+    out.extend(hits(&icon_row.rows, &[Action::Open(Screen::HomeIcon)]));
+    let mut bottom = icon_row.bottom;
+    if let Some(i) = s.section_edit {
+        let gone = widgets::list(
+            &mut c,
+            t,
+            f,
+            bottom + m.card_gap,
+            &[Row::new(l.pick(["删除这一栏", "刪除這一欄", "Remove this section"])).tint(t.pal.danger)],
+        );
+        out.extend(hits(&gone.rows, &[Action::HomeDeleteSection(i)]));
+        bottom = gone.bottom;
+    }
+    keyboard_hits(&mut c, t, f, s, l.pick(["完成", "完成", "Done"]), true, &mut out);
+    let _ = bottom;
+    Frame { caret: Some(caret), ..Frame::new(t, c, out, title, top) }
+}
+
+/// 给首页的某一条改名：名字只换首页上显示的字，留空就是回它自己的名字。
+pub fn entry_name(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let title = l.pick(["给这一条改名", "給這一條改名", "Rename the entry"]);
+    // 改的是哪一条：把它的名字写成小标题，免得改错。
+    let which = match s.entry_edit {
+        Some(entry) => entry.shown(l, &s.entry_names),
+        None => l.pick(["首页条目", "首頁條目", "A home entry"]),
+    };
+    let y = widgets::section_first(&mut c, t, f, top, which);
+    let (below, caret) = widgets::text_field(&mut c, t, f, y, &s.entry_name);
+    out.push(Hit {
+        rect: Rect::new(m.margin, y, m.w as f32 - m.margin * 2.0, m.dp(56.0)),
+        action: Action::TypeInto(Field::Name),
+    });
+    let mut bottom = below;
+    if s.entry_edit.is_some_and(|entry| s.entry_names.contains_key(entry.id())) {
+        let reset = widgets::list(
+            &mut c,
+            t,
+            f,
+            bottom + m.card_gap,
+            &[Row::new(l.pick(["改回默认名字", "改回預設名字", "Back to its own name"])).trail(Trail::Arrow)],
+        );
+        out.extend(hits(&reset.rows, &[Action::EntryNameReset]));
+        bottom = reset.bottom;
+    }
+    widgets::footnote(
+        &mut c,
+        t,
+        f,
+        bottom + m.dp(8.0),
+        l.pick([
+            "名字只换首页上显示的字，功能不变；留着空的按原来的名字显示。",
+            "名字只換首頁上顯示的字，功能不變；留著空的按原來的名字顯示。",
+            "Only the words on the home page change, not what the entry does; left empty it wears its own name again.",
+        ]),
+    );
+    keyboard_hits(&mut c, t, f, s, l.pick(["完成", "完成", "Done"]), true, &mut out);
+    Frame { caret: Some(caret), ..Frame::new(t, c, out, title, top) }
+}
+
+/// 改首页顶上那个大字：留空就回到出厂那个字。
+pub fn home_title(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = page(cx);
+    let mut out = Vec::new();
+    let top = m.content_top;
+    let title = l.pick(["首页标题", "首頁標題", "Home title"]);
+    let y = widgets::section_first(&mut c, t, f, top, l.pick(["名字", "名字", "Name"]));
+    let (below, caret) = widgets::text_field(&mut c, t, f, y, &s.home_title_edit);
+    out.push(Hit {
+        rect: Rect::new(m.margin, y, m.w as f32 - m.margin * 2.0, m.dp(56.0)),
+        action: Action::TypeInto(Field::Name),
+    });
+    widgets::footnote(
+        &mut c,
+        t,
+        f,
+        below + m.dp(8.0),
+        l.pick([
+            "这是首页最上面那个大字；留着空的就还是出厂那个。字太长会被自动缩小到一行里。",
+            "這是首頁最上面那個大字；留著空的就還是出廠那個。字太長會被自動縮小到一行裡。",
+            "This is the large word at the top of the home page; left empty it stays as it ships. A long one is set smaller to fit one line.",
+        ]),
+    );
+    keyboard_hits(&mut c, t, f, s, l.pick(["完成", "完成", "Done"]), true, &mut out);
+    Frame { caret: Some(caret), ..Frame::new(t, c, out, title, top) }
+}
+
+/// 布局备份：首页的分组、顺序、名字、标题，以及控制中心的磁贴，写成一个
+/// 文件，也能从文件读回来。
+pub fn layout(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = m.content_top;
+
+    // 这一份现在是什么样：几栏、几条、几枚磁贴。
+    let held: usize = s.home_top.len() + s.home_rest.len() + s.home_sections.iter().map(|section| section.entries.len()).sum::<usize>();
+    let about = format!(
+        "{} {} · {} {} · {} {}",
+        l.pick(["分类", "分類", "Sections"]),
+        s.home_sections.len(),
+        l.pick(["条目", "條目", "Entries"]),
+        held,
+        l.pick(["磁贴", "磁貼", "Tiles"]),
+        s.tiles.len(),
+    );
+    y = widgets::section_first(&mut c, t, f, y, l.pick(["这一份", "這一份", "This one"]));
+    let card = widgets::list(
+        &mut c,
+        t,
+        f,
+        y,
+        &[
+            Row::new(&about).icon(BLUE, Icon::Layers),
+            Row::new(l.pick(["导出到存储", "匯出到儲存", "Write it to storage"])).icon(GREEN, Icon::Backup).trail(Trail::Arrow),
+            Row::new(l.pick(["导出到别处…", "匯出到別處…", "Write it elsewhere…"])).icon(GREEN, Icon::Folder).trail(Trail::Arrow),
+        ],
+    );
+    // 第一行只说这一份有多少，点了不动。
+    out.extend(hits(&card.rows[1..], &[Action::ExportLayout, Action::LayoutBrowseExport]));
+    y = card.bottom;
+
+    // 存储里的那些：点一条就按它改。
+    y = widgets::section(&mut c, t, f, y + m.card_gap, l.pick(["存储里的布局", "儲存裡的佈局", "Layouts in storage"]));
+    match &s.layouts {
+        None => y = widgets::footnote(&mut c, t, f, y, l.pick(["正在读……", "正在讀……", "Reading…"])),
+        Some(Err(why)) => y = widgets::footnote(&mut c, t, f, y, why),
+        Some(Ok(files)) if files.is_empty() => {
+            y = widgets::footnote(
+                &mut c,
+                t,
+                f,
+                y,
+                l.pick([
+                    "还没有导出过布局。导出一次，文件就落在存储的 Skyward 文件夹里。",
+                    "還沒有匯出過佈局。匯出一次，檔案就落在儲存的 Skyward 資料夾裡。",
+                    "Nothing written out yet: export once and the file lands in the Skyward folder in storage.",
+                ]),
+            )
+        }
+        Some(Ok(files)) => {
+            let rows: Vec<Row> = files.iter().map(|file| Row::new(&file.name).icon(BLUE, Icon::Backup).trail(Trail::Arrow)).collect();
+            let list = widgets::list(&mut c, t, f, y, &rows);
+            out.extend(hits(&list.rows, &(0..files.len()).map(Action::ImportLayout).collect::<Vec<_>>()));
+            y = list.bottom;
+        }
+    }
+    // 不在默认位置的文件：自己挑。
+    let elsewhere = widgets::list(
+        &mut c,
+        t,
+        f,
+        y + m.card_gap,
+        &[Row::new(l.pick(["从别处导入…", "從別處匯入…", "Take one from elsewhere…"])).icon(PURPLE, Icon::Folder).trail(Trail::Arrow)],
+    );
+    out.extend(hits(&elsewhere.rows, &[Action::LayoutBrowseImport]));
+    y = elsewhere.bottom;
+
+    let note = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        y + m.dp(10.0),
+        l.pick([
+            "导入会按文件里那一份改掉首页的分组、顺序、名字、标题，以及控制中心的磁贴；文件本身不动。文件名里的时间是导出它的那一刻。",
+            "匯入會按檔案裡那一份改掉首頁的分組、順序、名字、標題，以及控制中心的磁貼；檔案本身不動。檔名裡的時間是匯出它的那一刻。",
+            "Importing changes the home page's sections, order, names and title, and the control centre's tiles, to what the file holds; the file itself is left alone. The time in its name is when it was written out.",
+        ]),
+    );
+    Frame::new(t, fit(c, t, note), out, l.pick(["布局备份", "佈局備份", "Layout backup"]), m.content_top)
+}
+
+/// 挑布局的位置：导出时挑一个目录，导入时挑一个 `.json` 文件。
+pub fn layout_browse(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = m.content_top;
+    let exporting = s.layout_exporting;
+
+    // 现在在哪一层。
+    y = widgets::section_first(&mut c, t, f, y, s.layout_dir.path.as_str());
+    let up = widgets::list(
+        &mut c,
+        t,
+        f,
+        y,
+        &[Row::new(l.pick(["上一层", "上一層", "Up one level"])).icon(SLATE, Icon::Layers).trail(Trail::Arrow)],
+    );
+    out.extend(hits(&up.rows, &[Action::LayoutUp]));
+    y = up.bottom;
+    if exporting {
+        let here = widgets::list(
+            &mut c,
+            t,
+            f,
+            y + m.card_gap,
+            &[Row::new(l.pick(["导出到这一层", "匯出到這一層", "Write the layout here"])).icon(GREEN, Icon::Backup).trail(Trail::Arrow)],
+        );
+        out.extend(hits(&here.rows, &[Action::LayoutExportHere]));
+        y = here.bottom;
+    }
+
+    // 目录在前，`.json` 在后。
+    match &s.layout_dir.entries {
+        Err(why) => y = widgets::footnote(&mut c, t, f, y + m.card_gap, why),
+        Ok(entries) => {
+            let folders: Vec<&crate::app::FileRow> = entries.iter().filter(|entry| matches!(entry.kind, FileKind::Folder { .. })).collect();
+            let files: Vec<&crate::app::FileRow> =
+                entries.iter().filter(|entry| matches!(entry.kind, FileKind::File) && entry.name.ends_with(".json")).collect();
+            y = widgets::section(&mut c, t, f, y + m.card_gap, l.pick(["目录", "目錄", "Folders"]));
+            if folders.is_empty() {
+                y = widgets::footnote(&mut c, t, f, y, l.pick(["这一层没有子目录", "這一層沒有子目錄", "No folders here"]));
+            } else {
+                let rows: Vec<Row> = folders.iter().map(|entry| Row::new(&entry.name).icon(BLUE, Icon::Folder).trail(Trail::Arrow)).collect();
+                let list = widgets::list(&mut c, t, f, y, &rows);
+                out.extend(hits(&list.rows, &(0..folders.len()).map(Action::LayoutEnter).collect::<Vec<_>>()));
+                y = list.bottom;
+            }
+            if !exporting {
+                y = widgets::section(&mut c, t, f, y + m.card_gap, l.pick(["布局文件", "佈局檔案", "Layout files"]));
+                if files.is_empty() {
+                    y = widgets::footnote(&mut c, t, f, y, l.pick(["这一层没有 .json 文件", "這一層沒有 .json 檔案", "No .json files here"]));
+                } else {
+                    let rows: Vec<Row> = files.iter().map(|entry| Row::new(&entry.name).icon(PURPLE, Icon::Backup).trail(Trail::Arrow)).collect();
+                    let list = widgets::list(&mut c, t, f, y, &rows);
+                    out.extend(hits(&list.rows, &(0..files.len()).map(Action::LayoutPick).collect::<Vec<_>>()));
+                    y = list.bottom;
+                }
+            }
+        }
+    }
+
+    let note = l.pick(match exporting {
+        true => [
+            "挑一个目录，点「导出到这一层」就把布局写在那里；内部存储与 U 盘都能挑。",
+            "挑一個目錄，點「匯出到這一層」就把佈局寫在那裡；內部儲存與 USB 隨身碟都能挑。",
+            "Pick a folder, then write the layout there: internal storage and a USB drive both work.",
+        ],
+        false => [
+            "点一个 .json 文件就按它改布局；目录照常进去看。",
+            "點一個 .json 檔案就按它改佈局；目錄照常進去看。",
+            "Tap a .json file to lay it over the pages as it stands; folders open as usual.",
+        ],
+    });
+    let note = widgets::footnote(&mut c, t, f, y + m.dp(10.0), note);
+    Frame::new(t, fit(c, t, note), out, l.pick(["挑一个位置", "挑一個位置", "Choose a place"]), m.content_top)
+}
+
+/// 文件传输：内部存储交给电脑的那一个开关，以及它现在到底是不是在跑。
+pub fn file_transfer(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let top = t.m.content_top;
+    let on = s.file_transfer;
+    let open = s.data.storage_open();
+
+    let y = widgets::section_first(&mut c, t, f, top, l.pick(["开关", "開關", "Switch"]));
+    let rows = [Row::new(l.pick(["文件传输", "檔案傳輸", "File transfer"])).icon(BLUE, Icon::Usb).subtitle(l.pick([
+        "打开后内部存储交给电脑；数据线插上，电脑上就能看到手机。",
+        "開啟後內部儲存交給電腦；資料線插上，電腦上就能看到手機。",
+        "Turn it on and internal storage goes to the computer: plug the cable in and the phone shows up there.",
+    ])).trail(Trail::Switch(on))];
+    let list = widgets::list(&mut c, t, f, y, &rows);
+    out.push(Hit { rect: list.rows[0], action: Action::Toggle(Switch::FileTransfer) });
+    let mut y = list.bottom;
+
+    // 「现在」这一格说实话：开关开着，服务没跑起来也照说。
+    y = widgets::section(&mut c, t, f, y + t.m.card_gap, l.pick(["现在", "現在", "Now"]));
+    let now = match (s.transfer_running, open) {
+        (false, _) => l.pick(["关着，电脑上看不到手机", "關著，電腦上看不到手機", "Off: the computer finds no phone"]),
+        (true, true) => l.pick(["开着，内部存储已经交给电脑", "開著，內部儲存已經交給電腦", "On: internal storage is offered"]),
+        (true, false) => l.pick([
+            "开着，但内部存储还没解锁，暂时不交给电脑",
+            "開著，但內部儲存還沒解鎖，暫時不交給電腦",
+            "On, but internal storage is not unlocked yet, so nothing is offered",
+        ]),
+    };
+    let rows = [Row::new(now).icon(if s.transfer_running { BLUE } else { SLATE }, Icon::Layers)];
+    let list = widgets::list(&mut c, t, f, y, &rows);
+    y = list.bottom;
+
+    let note = l.pick([
+        "开关只决定 recovery 里那套 MTP 服务跑不跑；电脑上看不看得见，还要数据线插在电脑上、电脑认这个设备。数据分区没解锁时不会把盘交出去，先解密再来。",
+        "開關只決定 recovery 裡那套 MTP 服務跑不跑；電腦上看不看得見，還要資料線插在電腦上、電腦認這個裝置。資料分區沒解鎖時不會把盤交出去，先解密再來。",
+        "The switch settles whether the recovery's own MTP service runs: whether the computer sees the phone still needs the cable in it and the device recognised there. Nothing is offered while the data partition is locked, so unlock it first.",
+    ]);
+    let y = widgets::footnote(&mut c, t, f, y + t.m.dp(10.0), note);
+
+    Frame::new(t, fit(c, t, y), out, l.pick(["文件传输", "檔案傳輸", "File transfer"]), top)
 }
 
 /// What the home page says beside its entry to the systems: the one that
@@ -594,17 +1447,10 @@ pub fn settings(cx: &Ctx) -> Frame {
         Row::new(l.pick(TIME_ZONE)).icon(ORANGE, Icon::Clock).trail(Trail::Value(s.zone_name())),
     ]);
     out.extend(hits(&general.rows, &[Action::Open(Screen::Language), Action::Open(Screen::TimeZone)]));
-    y = widgets::section(&mut c, t, f, general.bottom, "USB");
-    let usb = widgets::list(&mut c, t, f, y, &[Row::new(l.pick(["文件传输", "檔案傳輸", "File transfer"])).icon(BLUE, Icon::Usb).trail(Trail::Switch(s.file_transfer))]);
-    out.extend(hits(&usb.rows, &[Action::Toggle(Switch::FileTransfer)]));
-    let note = l.pick([
-        "开启后，可在电脑上管理内部存储中的文件，需先完成「解密」。",
-        "開啟後，可在電腦上管理內部儲存空間中的檔案，需先完成「解密」。",
-        "When on, a computer can manage the files in internal storage, once it is decrypted.",
-    ]);
-    let bottom = widgets::footnote(&mut c, t, f, usb.bottom, note);
-    // 终端不在这里：高级页已经有一个，同一个东西开两个入口反而添乱
-    //（2026-11-17）。关于与更新也一样，更新在首页底部单独一栏。
+    // USB 那块（文件传输）搬到首页当条目了，设置里不再重复（2026-11-28）。
+    let bottom = general.bottom;
+    // 终端不在这里：同一个东西开两个入口反而添乱（2026-11-17）。关于与更新
+    // 也一样，更新在首页底部单独一栏。
     Frame::new(t, fit(c, t, bottom), out, l.pick(SETTINGS), top)
 }
 
@@ -1538,9 +2384,9 @@ fn after_update(c: &mut Canvas, cx: &Ctx, y: f32) -> f32 {
         // start it again is the system update's.
         Standing::Failed(_) => {
             let said = l.pick([
-                "更新合并没有完成，可在「高级 > 系统更新」里再合并一次。",
-                "更新合併沒有完成，可在「進階 > 系統更新」裡再合併一次。",
-                "The update did not finish merging. Start it again from Advanced > System update.",
+                "更新合并没有完成，可在首页的「系统更新」里再合并一次。",
+                "更新合併沒有完成，可在首頁的「系統更新」裡再合併一次。",
+                "The update did not finish merging. Start it again under System update on the home page.",
             ]);
             y = widgets::footnote(c, t, f, y, said);
         }
@@ -2497,7 +3343,7 @@ pub fn search(cx: &Ctx) -> Frame {
                 ]);
                 widgets::footnote(&mut c, t, f, top, how);
             } else {
-                let found = search::find_on(&s.search, l, |screen| s.offers(screen));
+                let found = search::find_on(&s.search, l, &s.entry_names, |screen| s.offers(screen));
                 if found.is_empty() {
                     let typed = s.search.trim();
                     nothing_found = tr!(l, "未找到\"{typed}\"", "找不到「{typed}」", "Nothing found for “{typed}”");
@@ -3823,66 +4669,6 @@ fn st_target(target: Option<String>) -> String {
         Some(t) => t,
         None => "\u{2014}".to_owned(),
     }
-}
-
-pub fn advanced(cx: &Ctx) -> Frame {
-    let (t, f, l) = (cx.t, cx.f, cx.state.lang);
-    // 长页：条目多了以后一屏放不下，整页跟着手指滚。
-    let mut c = long_page(cx);
-    let top = t.m.content_top;
-    // Every day's work first -- what is running, the data partition, the
-    // partitions, the files' labels and a shell -- then what reaches the
-    // network, then what checks or records the phone, and last what repairs
-    // it or stops it.
-    // 充电排在录屏下面：插着线时右侧给这一刻送进电池的功率，与充电页上那个
-    // 数字是同一个；拔了线就只剩名字。
-    let charging = match &cx.info.battery {
-        Some(b) if b.plugged => Some(cx.state.charge.now.map_or_else(|| l.pick(["充电中", "充電中", "Charging"]).to_owned(), fmt::watts)),
-        _ => None,
-    };
-    let charge = match &charging {
-        Some(value) => Row::new(l.pick(CHARGE)).icon(GREEN, Icon::Battery).trail(Trail::Value(value)),
-        None => Row::new(l.pick(CHARGE)).icon(SLATE, Icon::Battery),
-    };
-    let tools = widgets::list(&mut c, t, f, top, &[
-        Row::new(l.pick(["任务", "任務", "Tasks"])).icon(BLUE, Icon::Install),
-        Row::new(l.pick(["分区管理", "分割區管理", "Partitions"])).icon(SLATE, Icon::Mount),
-        Row::new(l.pick(["录屏", "錄影", "Screen recording"])).icon(RED, Icon::Record),
-        charge,
-        Row::new(l.pick(DECRYPT)).icon(BLUE, Icon::Lock).trail(Trail::Value(fmt::data(l, &cx.state.data))),
-        Row::new(l.pick(["挂载", "掛載", "Mount"])).icon(SLATE, Icon::Mount),
-        Row::new(l.pick(TERMINAL)).icon(SLATE, Icon::Terminal),
-        Row::new(l.pick(FILESYSTEMS)).icon(RED, Icon::Mount),
-        Row::new(l.pick(SERVE)).icon(BLUE, Icon::Globe),
-        Row::new(l.pick(FETCH)).icon(GREEN, Icon::Globe),
-        Row::new(l.pick(AVB)).icon(RED, Icon::Shield),
-        Row::new(l.pick(["Root 管理", "Root 管理", "Root"])).icon(PURPLE, Icon::Shield),
-        Row::new(l.pick(UPDATE)).icon(GREEN, Icon::Layers).trail(Trail::Value(update_value(cx))),
-        Row::new(l.pick(LOGS)).icon(ORANGE, Icon::Log),
-        Row::new(l.pick(["U 盘管理", "USB 隨身碟管理", "USB drive"])).icon(PURPLE, Icon::UsbDrive),
-        Row::new(l.pick(RELABEL)).icon(PURPLE, Icon::Shield),
-        Row::new(l.pick(["关机", "關機", "Power off"])).icon(RED, Icon::Power),
-    ]);
-    let out = hits(&tools.rows, &[
-        Action::Open(Screen::Tasks),
-        Action::Open(Screen::Partitions),
-        Action::Open(Screen::Record),
-        Action::Open(Screen::Charge),
-        Action::Open(Screen::Decrypt),
-        Action::Open(Screen::Mount),
-        Action::Open(Screen::Terminal),
-        Action::Open(Screen::Filesystems),
-        Action::Open(Screen::Serve),
-        Action::Open(Screen::Fetch),
-        Action::Open(Screen::Avb),
-        Action::Open(Screen::Root),
-        Action::Open(Screen::Update),
-        Action::Open(Screen::Logs),
-        Action::FilesOtg,
-        Action::Open(Screen::Relabel),
-        Action::Open(Screen::Shutdown),
-    ]);
-    Frame::new(t, fit(c, t, tools.bottom), out, l.pick(ADVANCED), top)
 }
 
 /// 任务页：安装进行到哪一步、安装脚本最后说了什么、系统更新在下什么。
