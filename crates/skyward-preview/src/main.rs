@@ -555,7 +555,7 @@ fn main() -> Result<()> {
         ("109-restore-job-dark-refused", Screen::BackupJob, true, &|app| {
             app.state.backup_job = job(true, Vec::new(), None, Some(BackupEnd::Refused(BackupRefusal::DataReset)))
         }),
-        ("49-advanced-light", Screen::Advanced, false, &|_| {}),
+        ("49-home-order-light", Screen::HomeOrder, false, &|_| {}),
         ("50-files-light", Screen::Files, false, &|app| app.set_files("/".into(), Ok(sample_root()), LISTED)),
         ("51-files-dark", Screen::Files, true, &|app| app.set_files("/".into(), Ok(sample_root()), LISTED)),
         ("52-file-info-light", Screen::FileInfo, false, &|app| app.state.file = sample_root().into_iter().find(|e| e.name == "init.environ.rc")),
@@ -880,7 +880,7 @@ fn main() -> Result<()> {
             app.set_boot_slots(Ok(BootSlots { active: Slot::B, bootable: [false, true], successful: [false, true] }));
         }),
         ("116-update-dark-failed", Screen::Update, true, &|app| app.set_update(Standing::Failed(FailureCode::ExpectedMergeTarget))),
-        ("117-advanced-light-merged", Screen::Advanced, false, &|app| app.set_update(Standing::Merged)),
+        ("117-update-light-merged", Screen::Update, false, &|app| app.set_update(Standing::Merged)),
         ("58-license-light", Screen::License, false, &|_| {}),
         ("59-font-license-light", Screen::FontLicense, false, &|_| {}),
         ("60-slot-dark", Screen::Slot, true, &|app| {
