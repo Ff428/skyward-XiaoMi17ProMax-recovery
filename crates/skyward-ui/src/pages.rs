@@ -491,14 +491,13 @@ pub fn home(cx: &Ctx) -> Frame {
         }
     } else {
         let top = offered(top_all.as_ref());
-        if !top.is_empty() {
-            let rows: Vec<Row> = top
-                .iter()
-                .map(|entry| home_row(*entry, l, &cx.state.entry_names, wlan_text, systems_text.as_deref(), skyward_text, cx.state.file_transfer, update_text))
-                .collect();
-            let list = widgets::list(&mut c, t, f, y, &rows);
-            out.extend(hits(&list.rows, &top.iter().map(|entry| entry.action()).collect::<Vec<_>>()));
-            y = list.bottom + t.m.card_gap;
+        // 顶置的每一条各占一张卡：放两个就是两张，放三个就是三张，不挤在
+        // 同一张卡里（2026-11-28 用户要的「一个窗口显示一项功能」）。
+        for entry in &top {
+            let row = home_row(*entry, l, &cx.state.entry_names, wlan_text, systems_text.as_deref(), skyward_text, cx.state.file_transfer, update_text);
+            let one = widgets::list(&mut c, t, f, y, &[row]);
+            out.push(Hit { rect: one.rows[0], action: entry.action() });
+            y = one.bottom + t.m.card_gap;
         }
         // 「其他」也是一栏：位置由 `home_rest_at` 说，删掉的分类的条目都落到
         // 这里，所以它能上下挪，却不能删。
@@ -4799,11 +4798,13 @@ pub fn partitions(cx: &Ctx) -> Frame {
         Some(Ok(list_rows)) => {
             // 这台机器 by-name 底下有一百六十几条，一次画进画布要十几屏；画布
             // 装不下就被截在屏幕口上——文字断、卡片底是直角。按三十条一页发。
-            const PER: usize = 30;
-            let pages = list_rows.len().div_ceil(PER).max(1);
+            // 一屏一页，跟应用管理一样：往上滑下一页、往下滑上一页。
+            let room = t.m.h as f32 - top - t.m.margin * 2.0 - t.m.section_block - t.m.row_h * 2.0;
+            let per = ((room / t.m.row_h).floor() as usize).max(1);
+            let pages = list_rows.len().div_ceil(per).max(1);
             let page = s.part_page.min(pages - 1);
-            let from = page * PER;
-            let to = (from + PER).min(list_rows.len());
+            let from = page * per;
+            let to = (from + per).min(list_rows.len());
             let names: Vec<String> = list_rows[from..to].iter().map(|(name, _)| name.clone()).collect();
             let sizes: Vec<String> = list_rows[from..to].iter().map(|(_, size)| fmt::bytes(*size)).collect();
             let tally = format!("{} / {}", page + 1, pages);
@@ -4812,23 +4813,13 @@ pub fn partitions(cx: &Ctx) -> Frame {
                 let row = Row::new(name).icon(PURPLE, Icon::Layers);
                 shown.push(if s.dump_pick == Some(from + k) { row.trail(Trail::Check(true)) } else { row.trail(Trail::Text(size)) });
             }
-            // 翻页摆在列表最下面：上一页 / 下一页（第几页 / 共几页）。
-            if pages > 1 {
-                if page > 0 {
-                    shown.push(Row::new(l.pick(["上一页", "上一頁", "Previous"])).icon(SLATE, Icon::Layers).trail(Trail::Arrow));
-                }
-                shown.push(Row::new(l.pick(["下一页", "下一頁", "Next"])).icon(BLUE, Icon::Layers).trail(Trail::Text(tally.as_str())));
-            }
             let pick = widgets::list(&mut c, t, f, y, &shown);
-            let mut acts: Vec<Action> = (0..names.len()).map(|k| Action::PickDump(from + k)).collect();
-            if pages > 1 {
-                if page > 0 {
-                    acts.push(Action::PartPage(-1));
-                }
-                acts.push(Action::PartPage(1));
-            }
-            out.extend(hits(&pick.rows, &acts));
+            out.extend(hits(&pick.rows, &(0..names.len()).map(|k| Action::PickDump(from + k)).collect::<Vec<_>>()));
             y = pick.bottom + t.m.card_gap;
+            if pages > 1 {
+                let note = format!("{} · {}", tally, l.pick(["上滑下一页，下滑上一页", "上滑下一頁，下滑上一頁", "Swipe up for the next page"]));
+                y = widgets::footnote(&mut c, t, f, y, &note) + t.m.card_gap;
+            }
             match s.dump_pick.and_then(|k| names.get(k).cloned()) {
                 Some(name) => {
                     let note = tr!(l, "导出「{name}」到内部存储", "匯出「{name}」到內部儲存", "Export “{name}” to internal storage");

@@ -1647,7 +1647,7 @@ enum OrderList {
 }
 
 /// 拖动时隔多久才算下一次（触摸比屏幕快，全接就掉帧）与震动冷却。
-const DRAG_STEP_MS: u64 = 12;
+const DRAG_STEP_MS: u64 = 16;
 const HAPTIC_STEP_MS: u64 = 80;
 
 /// 手指拎着的一条：哪一条，整页第一行的顶与行距，整页一共几行。行高一样，
@@ -2435,13 +2435,8 @@ impl App {
         {
             match self.lift_entry(entry) {
                 Some(lifted) => {
-                    // 顺手记下它这一行在哪儿：画的时候它跟着手指走。
-                    let at = self
-                        .order_rows()
-                        .iter()
-                        .position(|(list, idx)| self.order_entry(*list, *idx) == Some(entry))
-                        .unwrap_or(0) as f32;
-                    self.state.home_drag = Some((entry, lifted.first_y + at * lifted.row_h));
+                    // 刚拎起来时先不画浮动卡：这一行还在原位，一出现就少一行，
+                    // 下面的行会“跳”一下。等第一次真的移动了再画（2026-11-28）。
                     self.drag = Drag::EntryDrag(lifted);
                     fx.push(Effect::Haptic);
                     self.refresh();

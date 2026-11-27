@@ -20,6 +20,7 @@ impl App {
             Screen::DataApps if matches!(&self.state.apps, Some(Ok(_))) => Some(Action::AppPage(step)),
             Screen::SystemApps => Some(Action::SysPage(step)),
             Screen::Modules if matches!(&self.state.apps, Some(Ok(_))) => Some(Action::ModulePage(step)),
+            Screen::Partitions => Some(Action::PartPage(step)),
             _ => None,
         }
     }
