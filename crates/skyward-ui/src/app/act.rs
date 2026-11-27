@@ -907,6 +907,8 @@ impl App {
                     if self.state.section_view == Some(at) {
                         self.state.section_view = Some(to);
                     }
+                    // 从原来的位置滑到新的位置，不是一下跳过去（2026-11-28）。
+                    self.state.home_slide = Some((to, if up { 3.2 } else { -3.2 }));
                     self.refresh();
                 }
             }
@@ -919,6 +921,7 @@ impl App {
                 let to = if up { at.saturating_sub(1) } else { (at + 1).min(len) };
                 if to != at {
                     self.state.home_rest_at = (to < len).then_some(to);
+                    self.state.home_slide = Some((to, if up { 3.2 } else { -3.2 }));
                     self.refresh();
                 }
             }
@@ -1654,7 +1657,7 @@ impl App {
 
     /// 第一次用（设置里没有任何分栏）时，内置的「刷机与备份」只活在显示层；
     /// 用户一动它，就把它落进 state，之后按用户的来。
-    fn materialize_home(&mut self) {
+    pub(super) fn materialize_home(&mut self) {
         if self.state.home_sections.is_empty() && self.state.home_top.is_empty() && rest_is_default(&self.state.home_rest) {
             let l = self.state.lang;
             let (top, sections, rest) = factory(l);

@@ -57,9 +57,9 @@ impl App {
             return match ev {
                 Touch::Move(_, y) => {
                     let page_y = y + self.top().1;
-                    let span = drag.count.max(1) as f32;
+                    let span = drag.total.max(1) as f32;
                     let at = (((page_y - drag.first_y) / drag.row_h).floor()).clamp(0.0, span - 1.0) as usize;
-                    let moved = self.move_entry(drag.entry, at);
+                    let moved = self.move_entry_to_row(drag.entry, at);
                     if moved {
                         self.refresh();
                         vec![Effect::Haptic]

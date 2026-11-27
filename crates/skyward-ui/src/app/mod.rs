@@ -1644,16 +1644,15 @@ enum OrderList {
     Rest,
 }
 
-/// 手指拎着的一条：哪一条、在哪一列、起手时第几格；那一列第一行的顶与
-/// 行距，指尖落在第几格就把它挪到第几格。行高一样，所以几何只记一份。
+/// 手指拎着的一条：哪一条，整页第一行的顶与行距，整页一共几行。行高一样，
+/// 所以几何只记一份；指尖落在第几行，就把它挪到那一行——那一行在哪一栏，
+/// 它就跟到哪一栏（2026-11-28，跨栏拖动）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EntryDrag {
     entry: Entry,
-    list: OrderList,
-    from: usize,
     first_y: f32,
     row_h: f32,
-    count: usize,
+    total: usize,
 }
 
 /// 手指拖着的那一枚磁贴：它自己，和手指现在在哪儿。
@@ -2104,6 +2103,10 @@ impl App {
         if self.display_on && self.install_writing() {
             return Some(now + INSTALL_FRAME_MS);
         }
+        // 排序页上那一栏正滑回来：每 16 ms 要一帧。
+        if self.state.home_slide.is_some() {
+            return Some(now + 16);
+        }
         let held = match self.drag {
             Drag::Press { action: Some(Action::OpenEntry(_)), at, .. } => Some(at + LONG_PRESS_MS),
             // 排序页上按住一条，够久就拎起来拖着走。
@@ -2409,6 +2412,12 @@ impl App {
             self.drag = Drag::Held;
             fx.extend(self.held_entry(i));
         }
+        // 那一栏滑回自己的位置：每帧收一半，收到看不清就停（2026-11-28）。
+        if let Some((slot, slide)) = self.state.home_slide {
+            let next = slide * 0.42;
+            self.state.home_slide = if next.abs() < 0.08 { None } else { Some((slot, next)) };
+            self.refresh();
+        }
         // 排序页上按住一条：拎起来，之后跟着手指上下走（2026-11-28）。
         if let Drag::Press { action: Some(Action::HomePick(entry)), at, .. } = self.drag
             && now >= at + LONG_PRESS_MS
@@ -2633,54 +2642,109 @@ impl App {
         (OrderList::Rest, self.state.home_rest.iter().position(|e| *e == entry).unwrap_or(0))
     }
 
-    /// 长按之后把这一条拎起来：那一列第一行的顶、行距、条数，全取这一帧画
-    /// 出来的命中框，不再另算一遍（免得「画在那儿、拖不动」）。
-    fn lift_entry(&self, entry: Entry) -> Option<EntryDrag> {
-        let (list, from) = self.order_place(entry);
-        let frame = self.frame.as_ref()?;
-        let mut first_y = f32::MAX;
-        let mut row_h = 0.0;
-        let mut count = 0;
-        for hit in &frame.hits {
-            let Action::HomePick(other) = hit.action else { continue };
-            if self.order_place(other).0 != list {
-                continue;
-            }
-            count += 1;
-            if hit.rect.y < first_y {
-                first_y = hit.rect.y;
-                row_h = hit.rect.h;
-            }
+    /// 整页从上到下每一行在哪一栏、第几格：顶置 → 各栏（「其他」插在它
+    /// 说的那个位置）→「其他」。排行顺序与 `pages::home_order` 画的顺序一致。
+    fn order_rows(&self) -> Vec<(OrderList, usize)> {
+        let mut rows = Vec::new();
+        for k in 0..self.state.home_top.len() {
+            rows.push((OrderList::Top, k));
         }
-        if count == 0 || row_h <= 0.0 {
-            return None;
+        let len = self.state.home_sections.len();
+        let rest_at = self.state.home_rest_at.unwrap_or(len).min(len);
+        for (i, section) in self.state.home_sections.iter().enumerate() {
+            if i == rest_at {
+                rows.extend((0..self.state.home_rest.len()).map(|k| (OrderList::Rest, k)));
+            }
+            rows.extend((0..section.entries.len()).map(|k| (OrderList::Section(i), k)));
         }
-        Some(EntryDrag { entry, list, from, first_y, row_h, count })
+        if rest_at >= len {
+            rows.extend((0..self.state.home_rest.len()).map(|k| (OrderList::Rest, k)));
+        }
+        rows
     }
 
-    /// 把拎着的那一条挪到它所在那一列的第 `to` 格。
-    fn move_entry(&mut self, entry: Entry, to: usize) -> bool {
-        let (list, from) = self.order_place(entry);
-        if from == to {
+    /// 长按之后把这一条拎起来：整页第一行的顶、行距、行数，全取这一帧画出来
+    /// 的命中框，不再另算一遍（免得「画在那儿、拖不动」）。第一次用的时候
+    /// 分类还只在显示层，先落进 state 再拎。
+    fn lift_entry(&mut self, entry: Entry) -> Option<EntryDrag> {
+        self.materialize_home();
+        let first = {
+            let frame = self.frame.as_ref()?;
+            let mut first_y = f32::MAX;
+            let mut row_h = 0.0;
+            let mut total = 0;
+            for hit in &frame.hits {
+                if !matches!(hit.action, Action::HomePick(_)) {
+                    continue;
+                }
+                total += 1;
+                if hit.rect.y < first_y {
+                    first_y = hit.rect.y;
+                    row_h = hit.rect.h;
+                }
+            }
+            (first_y, row_h, total)
+        };
+        let (first_y, row_h, total) = first;
+        if total == 0 || row_h <= 0.0 {
+            return None;
+        }
+        if !self.order_rows().iter().any(|(list, at)| self.order_entry(*list, *at) == Some(entry)) {
+            return None;
+        }
+        Some(EntryDrag { entry, first_y, row_h, total })
+    }
+
+    /// 某一栏里第 `at` 格是哪一条。
+    fn order_entry(&self, list: OrderList, at: usize) -> Option<Entry> {
+        match list {
+            OrderList::Top => self.state.home_top.get(at).copied(),
+            OrderList::Section(i) => self.state.home_sections.get(i)?.entries.get(at).copied(),
+            OrderList::Rest => self.state.home_rest.get(at).copied(),
+        }
+    }
+
+    /// 把拎着的那一条挪到整页的第 `flat` 行：那一行在哪一栏就进哪一栏，
+    /// 所以「其他」里的条目能拖进刷机备份，也能拖进文件模块。
+    fn move_entry_to_row(&mut self, entry: Entry, flat: usize) -> bool {
+        let plan = self.order_rows();
+        let Some(&(target, at)) = plan.get(flat.min(plan.len().saturating_sub(1))) else {
+            return false;
+        };
+        let (from_list, from) = self.order_place(entry);
+        if from_list == target && from == at {
             return false;
         }
-        match list {
+        match from_list {
             OrderList::Top => {
-                let moved = self.state.home_top.remove(from);
-                let at = to.min(self.state.home_top.len());
-                self.state.home_top.insert(at, moved);
+                self.state.home_top.remove(from);
             }
             OrderList::Section(i) => {
                 if let Some(section) = self.state.home_sections.get_mut(i) {
-                    let moved = section.entries.remove(from);
-                    let at = to.min(section.entries.len());
-                    section.entries.insert(at, moved);
+                    section.entries.remove(from);
                 }
             }
             OrderList::Rest => {
-                let moved = self.state.home_rest.remove(from);
-                let at = to.min(self.state.home_rest.len());
-                self.state.home_rest.insert(at, moved);
+                self.state.home_rest.remove(from);
+            }
+        }
+        // 同一列里往下挪：先摘掉自己，后面的格子都往前一位。
+        let at = if from_list == target && from < at { at - 1 } else { at };
+        match target {
+            OrderList::Top => {
+                let n = self.state.home_top.len();
+                self.state.home_top.insert(at.min(n), entry);
+            }
+            OrderList::Section(i) => match self.state.home_sections.get_mut(i) {
+                Some(section) => {
+                    let n = section.entries.len();
+                    section.entries.insert(at.min(n), entry);
+                }
+                None => self.state.home_rest.push(entry),
+            },
+            OrderList::Rest => {
+                let n = self.state.home_rest.len();
+                self.state.home_rest.insert(at.min(n), entry);
             }
         }
         true

@@ -745,11 +745,22 @@ pub fn home_order(cx: &Ctx) -> Frame {
     // 每一栏：小标题（点它就是「放进这一栏」或进它的二级页）+ 一张条目卡。
     // 分类画成标题而不是一张卡：卡挨着卡会粘在一起，标题天然分开。
     let rest_at = s.home_rest_at.unwrap_or(sections.len()).min(sections.len());
-    for (i, section) in sections.iter().enumerate() {
-        if i == rest_at {
-            y = order_rest_block(&mut c, t, f, l, y, &mut out, s, &rest_list, pick, hint) + m.card_gap;
+    // 刚挪过的那一栏从原位滑过来：画在偏移上，排版仍按它该在的位置算，别的
+    // 栏不跟着抖（2026-11-28，照系统设置那个观感）。
+    let slide = s.home_slide;
+    let dy_of = |slot: usize| -> f32 {
+        match slide {
+            Some((at, off)) if at == slot => off * m.row_h,
+            _ => 0.0,
         }
-        let before = y;
+    };
+    for (i, section) in sections.iter().enumerate() {
+        let dy = dy_of(i);
+        if i == rest_at {
+            let drawn = order_rest_block(&mut c, t, f, l, y + dy, &mut out, s, &rest_list, pick, hint);
+            y = if drawn > y + dy { drawn - dy + m.card_gap } else { y };
+        }
+        let before = y + dy;
         // 标题带上条目数；右边留四个圆钮。
         let count = section.entries.len();
         let label = if count == 0 {
@@ -757,7 +768,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
         } else {
             format!("{} · {count}", section.name)
         };
-        y = widgets::section(&mut c, t, f, y, &label);
+        y = widgets::section(&mut c, t, f, before, &label) - dy;
         out.push(Hit {
             rect: Rect::new(m.margin, before, m.w as f32 - m.margin * 2.0 - m.dp(56.0), m.section_block),
             action: match pick {
@@ -783,7 +794,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
             out.push(Hit { rect: Rect::new(bx - d / 2.0 - m.dp(6.0), cy - d / 2.0 - m.dp(6.0), d + m.dp(12.0), d + m.dp(12.0)), action });
         }
         if section.entries.is_empty() {
-            y = widgets::footnote(&mut c, t, f, y, l.pick(["这一栏还是空的", "這一欄還是空的", "Empty for now"]));
+            y = widgets::footnote(&mut c, t, f, y + dy, l.pick(["这一栏还是空的", "這一欄還是空的", "Empty for now"])) - dy;
             continue;
         }
         let rows: Vec<Row> = section
@@ -797,7 +808,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
                 row
             })
             .collect();
-        let list = widgets::list(&mut c, t, f, y, &rows);
+        let list = widgets::list(&mut c, t, f, y + dy, &rows);
         let actions: Vec<Action> = section
             .entries
             .iter()
@@ -809,12 +820,14 @@ pub fn home_order(cx: &Ctx) -> Frame {
             .collect();
         out.extend(hits(&list.rows, &actions));
         pencil_buttons(&mut c, t, &mut out, &list.rows, &section.entries);
-        y = list.bottom;
+        y = list.bottom - dy;
     }
 
     // 「其他」摆在 `rest_at` 说的位置；它不能删，只能上下挪。
     if rest_at >= sections.len() {
-        y = order_rest_block(&mut c, t, f, l, y, &mut out, s, &rest_list, pick, hint);
+        let dy = dy_of(sections.len());
+        let drawn = order_rest_block(&mut c, t, f, l, y + dy, &mut out, s, &rest_list, pick, hint);
+        y = if drawn > y + dy { drawn - dy } else { y };
     }
 
     // 首页标题、布局备份、新建一栏、恢复默认。
@@ -4745,7 +4758,13 @@ pub fn tasks(cx: &Ctx) -> Frame {
 /// 刷入镜像、文件系统、挂载，以及分区镜像的导出与写回。
 pub fn partitions(cx: &Ctx) -> Frame {
     let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
-    let mut c = long_page(cx);
+    // 分区表动辄四十几条，三屏装不下：按条数要画布，末尾那张卡的圆角与后
+    // 半截分区才滚得到（2026-11-28，跟 0.6.0 无线网络那次同一个毛病）。
+    let count = match &s.partitions {
+        Some(Ok(rows)) => rows.len(),
+        _ => 0,
+    };
+    let mut c = long_page_rows(cx, count + 4);
     let mut out = Vec::new();
     let top = t.m.content_top;
     let rows = [
