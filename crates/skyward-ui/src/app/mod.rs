@@ -2424,7 +2424,13 @@ impl App {
         {
             match self.lift_entry(entry) {
                 Some(lifted) => {
-                    self.state.home_pick = None;
+                    // 顺手记下它这一行在哪儿：画的时候它跟着手指走。
+                    let at = self
+                        .order_rows()
+                        .iter()
+                        .position(|(list, idx)| self.order_entry(*list, *idx) == Some(entry))
+                        .unwrap_or(0) as f32;
+                    self.state.home_drag = Some((entry, lifted.first_y + at * lifted.row_h));
                     self.drag = Drag::EntryDrag(lifted);
                     fx.push(Effect::Haptic);
                     self.refresh();

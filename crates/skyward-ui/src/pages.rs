@@ -697,6 +697,9 @@ pub fn home_order(cx: &Ctx) -> Frame {
         "Tap an entry to pick it up, then tap where it goes; tap a heading to put it at that section's end.",
     ]);
     let pick = s.home_pick;
+    // 正被拎着的那一条：从它所在的列表里拿掉，最后单独画在手指底下，
+    // 这样它整行（图标、文字、热区）都跟着走，不是一格一格跳（2026-11-28）。
+    let dragged = s.home_drag.map(|(entry, _)| entry);
     // 第一次用的时候，内置的「刷机与备份」也要在排序页里看得见、动得了。
     let fresh = s.home_sections.is_empty() && s.home_top.is_empty() && rest_is_default(&s.home_rest);
     let (sections, top_list, rest_list) = if fresh {
@@ -717,7 +720,8 @@ pub fn home_order(cx: &Ctx) -> Frame {
         if top_list.is_empty() {
             y = widgets::footnote(&mut c, t, f, y, l.pick(["拎一条起来，点这里放到最上面", "拎一條起來，點這裡放到最上面", "Pick an entry, then tap here to put it on top"]));
         } else {
-            let rows: Vec<Row> = top_list
+            let shown: Vec<Entry> = top_list.iter().copied().filter(|entry| Some(*entry) != dragged).collect();
+            let rows: Vec<Row> = shown
                 .iter()
                 .map(|entry| {
                     let mut row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon());
@@ -728,7 +732,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
                 })
                 .collect();
             let list = widgets::list(&mut c, t, f, y, &rows);
-            let actions: Vec<Action> = top_list
+            let actions: Vec<Action> = shown
                 .iter()
                 .map(|entry| match pick {
                     Some(picked) if picked == *entry => Action::HomePick(*entry),
@@ -737,7 +741,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
                 })
                 .collect();
             out.extend(hits(&list.rows, &actions));
-            pencil_buttons(&mut c, t, &mut out, &list.rows, &top_list);
+            pencil_buttons(&mut c, t, &mut out, &list.rows, &shown);
             y = list.bottom;
         }
     }
@@ -797,8 +801,8 @@ pub fn home_order(cx: &Ctx) -> Frame {
             y = widgets::footnote(&mut c, t, f, y + dy, l.pick(["这一栏还是空的", "這一欄還是空的", "Empty for now"])) - dy;
             continue;
         }
-        let rows: Vec<Row> = section
-            .entries
+        let shown: Vec<Entry> = section.entries.iter().copied().filter(|entry| Some(*entry) != dragged).collect();
+        let rows: Vec<Row> = shown
             .iter()
             .map(|entry| {
                 let mut row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon());
@@ -809,8 +813,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
             })
             .collect();
         let list = widgets::list(&mut c, t, f, y + dy, &rows);
-        let actions: Vec<Action> = section
-            .entries
+        let actions: Vec<Action> = shown
             .iter()
             .map(|entry| match pick {
                 Some(picked) if picked == *entry => Action::HomePick(*entry),
@@ -819,7 +822,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
             })
             .collect();
         out.extend(hits(&list.rows, &actions));
-        pencil_buttons(&mut c, t, &mut out, &list.rows, &section.entries);
+        pencil_buttons(&mut c, t, &mut out, &list.rows, &shown);
         y = list.bottom - dy;
     }
 
@@ -828,6 +831,15 @@ pub fn home_order(cx: &Ctx) -> Frame {
         let dy = dy_of(sections.len());
         let drawn = order_rest_block(&mut c, t, f, l, y + dy, &mut out, s, &rest_list, pick, hint);
         y = if drawn > y + dy { drawn - dy } else { y };
+    }
+
+    // 拎着的那一条画在所有卡片之上，跟着手指走：一整行连带图标与热区。
+    if let Some((entry, top)) = s.home_drag {
+        let row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(entry), entry.icon());
+        let low = (fitted(t, y) as f32 - m.row_h - m.margin).max(m.content_top);
+        let at = top.clamp(m.content_top, low);
+        let float = widgets::list(&mut c, t, f, at, &[row]);
+        out.push(Hit { rect: float.rows[0], action: Action::HomePick(entry) });
     }
 
     // 首页标题、布局备份、新建一栏、恢复默认。
@@ -926,7 +938,9 @@ fn order_rest_block(
     if rest.is_empty() {
         return widgets::footnote(c, t, f, y, l.pick(["没有剩下的条目", "沒有剩下的條目", "Nothing left over"]));
     }
-    let rows: Vec<Row> = rest
+    let dragged = s.home_drag.map(|(entry, _)| entry);
+    let shown: Vec<Entry> = rest.iter().copied().filter(|entry| Some(*entry) != dragged).collect();
+    let rows: Vec<Row> = shown
         .iter()
         .map(|entry| {
             let mut row = Row::new(entry.shown(l, &s.entry_names)).icon(home_color(*entry), entry.icon());
@@ -937,7 +951,7 @@ fn order_rest_block(
         })
         .collect();
     let list = widgets::list(c, t, f, y, &rows);
-    let actions: Vec<Action> = rest
+    let actions: Vec<Action> = shown
         .iter()
         .map(|entry| match pick {
             Some(picked) if picked == *entry => Action::HomePick(*entry),
@@ -946,7 +960,7 @@ fn order_rest_block(
         })
         .collect();
     out.extend(hits(&list.rows, &actions));
-    pencil_buttons(c, t, out, &list.rows, rest);
+    pencil_buttons(c, t, out, &list.rows, &shown);
     list.bottom
 }
 

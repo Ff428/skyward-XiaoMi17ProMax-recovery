@@ -640,6 +640,9 @@ pub struct State {
     /// 没进任何分类、也不置顶的条目，落在首页最下面的「其他」里。
     pub home_rest: Vec<Entry>,
     /// 「其他」在首页折起来了，以及它的名字（空着用「其他」）。
+    /// 排序页上正被拎着的那一条，以及它跟到哪儿（页面坐标里那一行的顶）。
+    /// 画的时候它从列表里拿掉、单独画在手指底下（2026-11-28）。
+    pub home_drag: Option<(Entry, f32)>,
     /// 排序页上一栏刚挪过：它在画面上第几个、还要从多少行外滑回来。
     /// 每 16 ms 衰减一半，滑到位就清掉（2026-11-28，照系统设置的观感）。
     pub home_slide: Option<(usize, f32)>,
@@ -857,6 +860,7 @@ impl Default for State {
             home_sections: Vec::new(),
             home_top: Vec::new(),
             home_rest: crate::app::home::default_rest(),
+            home_drag: None,
             home_slide: None,
             home_rest_collapsed: false,
             home_rest_name: String::new(),

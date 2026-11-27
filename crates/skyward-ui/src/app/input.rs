@@ -57,18 +57,27 @@ impl App {
             return match ev {
                 Touch::Move(_, y) => {
                     let page_y = y + self.top().1;
+                    // 拎着的那一条整行（图标、文字、热区）跟着手指走。
+                    self.state.home_drag = Some((drag.entry, page_y - drag.row_h / 2.0));
                     let span = drag.total.max(1) as f32;
                     let at = (((page_y - drag.first_y) / drag.row_h).floor()).clamp(0.0, span - 1.0) as usize;
                     let moved = self.move_entry_to_row(drag.entry, at);
                     if moved {
+                        self.state.home_pick = None;
+                        self.row_press = None;
+                        self.row_art = None;
                         self.refresh();
                         vec![Effect::Haptic]
                     } else {
+                        self.dirty = true;
                         Vec::new()
                     }
                 }
                 Touch::Up | Touch::Down(..) => {
                     self.drag = Drag::Idle;
+                    self.state.home_drag = None;
+                    self.row_press = None;
+                    self.row_art = None;
                     self.refresh();
                     Vec::new()
                 }
@@ -388,7 +397,17 @@ impl App {
                 // the finger lands on it, if the finger stays.
                 let row = hit
                     .filter(|&(a, r)| self.frame.as_ref().is_some_and(|fr| fr.hits.contains(&Hit { rect: r, action: a })))
-                    .filter(|&(a, r)| row_wide(&t, r) && !matches!(a, Action::Open(Screen::About) | Action::Confirm(_) | Action::TypeInto(_)))
+                    .filter(|&(a, r)| {
+                        row_wide(&t, r)
+                            && !matches!(
+                                a,
+                                Action::Open(Screen::About)
+                                    | Action::Confirm(_)
+                                    | Action::TypeInto(_)
+                                    | Action::HomePick(_)
+                                    | Action::HomePlace(_)
+                            )
+                    })
                     .map(|(_, r)| r);
                 self.drag = match hit {
                     Some((Action::Slider(which), track)) => {
