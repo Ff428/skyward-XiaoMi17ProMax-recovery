@@ -483,7 +483,7 @@ pub fn home(cx: &Ctx) -> Frame {
         if !loose.is_empty() {
             let rows: Vec<Row> = loose
                 .iter()
-                .map(|entry| home_row(*entry, l, &cx.state.entry_names, wlan_text, systems_text.as_deref(), skyward_text, cx.state.file_transfer, update_text))
+                .map(|entry| home_row(*entry, l, &cx.state.entry_names, wlan_text, systems_text.as_deref(), skyward_text, cx.state.file_transfer, update_text, cx.state.home_keep_open))
                 .collect();
             let list = widgets::list(&mut c, t, f, y, &rows);
             out.extend(hits(&list.rows, &loose.iter().map(|entry| entry.action()).collect::<Vec<_>>()));
@@ -494,7 +494,7 @@ pub fn home(cx: &Ctx) -> Frame {
         // 顶置的每一条各占一张卡：放两个就是两张，放三个就是三张，不挤在
         // 同一张卡里（2026-11-28 用户要的「一个窗口显示一项功能」）。
         for entry in &top {
-            let row = home_row(*entry, l, &cx.state.entry_names, wlan_text, systems_text.as_deref(), skyward_text, cx.state.file_transfer, update_text);
+            let row = home_row(*entry, l, &cx.state.entry_names, wlan_text, systems_text.as_deref(), skyward_text, cx.state.file_transfer, update_text, cx.state.home_keep_open);
             let one = widgets::list(&mut c, t, f, y, &[row]);
             out.push(Hit { rect: one.rows[0], action: entry.action() });
             y = one.bottom + t.m.card_gap;
@@ -533,6 +533,7 @@ pub fn home(cx: &Ctx) -> Frame {
                 skyward_text,
                 cx.state.file_transfer,
                 update_text,
+                cx.state.home_keep_open,
                 &title,
                 section.icon,
                 entries,
@@ -573,6 +574,7 @@ fn section_card<'a>(
     skyward: Option<&'a str>,
     file_transfer: bool,
     update: Option<&'a str>,
+    keep_open: bool,
     title: &str,
     icon: Icon,
     entries: Vec<Entry>,
@@ -581,7 +583,7 @@ fn section_card<'a>(
 ) -> f32 {
     let mut rows: Vec<Row> = vec![Row::new(title).icon(BLUE, icon)];
     if !collapsed {
-        rows.extend(entries.iter().map(|entry| home_row(*entry, l, names, wlan, systems, skyward, file_transfer, update)));
+        rows.extend(entries.iter().map(|entry| home_row(*entry, l, names, wlan, systems, skyward, file_transfer, update, keep_open)));
     }
     let list = widgets::list(c, t, f, y, &rows);
     out.push(Hit { rect: list.rows[0], action: fold });
@@ -622,7 +624,7 @@ fn rest_card<'a>(
         state.home_rest_name.clone()
     };
     let title = format!("{} · {}", name, entries.len());
-    section_card(c, t, f, l, y, out, &state.entry_names, wlan, systems, skyward, state.file_transfer, update, &title, Icon::Folder, entries, state.home_rest_collapsed, Action::HomeFoldRest)
+    section_card(c, t, f, l, y, out, &state.entry_names, wlan, systems, skyward, state.file_transfer, update, state.home_keep_open, &title, Icon::Folder, entries, state.home_rest_collapsed, Action::HomeFoldRest)
 }
 
 /// 这一条在现在的手机上摆不摆（没有 WLAN、没有双系统、没有更新时不摆）。
@@ -641,7 +643,7 @@ fn home_color(entry: Entry) -> Rgba {
         Entry::Wlan | Entry::Files | Entry::Backup | Entry::SkywardUpdate | Entry::Decrypt | Entry::Serve | Entry::FileTransfer => BLUE,
         Entry::Modules | Entry::DataApps | Entry::Restore | Entry::Systems | Entry::Root | Entry::Usb | Entry::Relabel => PURPLE,
         Entry::Install | Entry::Charge | Entry::Fetch | Entry::Update => GREEN,
-        Entry::Settings | Entry::HomeOrder | Entry::Terminal | Entry::Partitions | Entry::Mount => SLATE,
+        Entry::Settings | Entry::HomeOrder | Entry::HomeOpen | Entry::Terminal | Entry::Partitions | Entry::Mount => SLATE,
         Entry::Reboot | Entry::Logs => ORANGE,
         Entry::Wipe | Entry::Avb | Entry::Filesystems | Entry::Record | Entry::Shutdown => RED,
         Entry::Tasks => BLUE,
@@ -658,8 +660,13 @@ fn home_row<'a>(
     skyward: Option<&'a str>,
     file_transfer: bool,
     update: Option<&'a str>,
+    keep_open: bool,
 ) -> Row<'a> {
     let mut row = Row::new(entry.shown(l, names)).icon(home_color(entry), entry.icon());
+    // 「首页分类展开」这一条本身就是个开关：右边直接露出它开着还是关着。
+    if entry == Entry::HomeOpen {
+        return row.trail(Trail::Switch(keep_open));
+    }
     // 文件传输点进去再开关：这一行只露出它现在开着还是关着。
     if entry == Entry::FileTransfer {
         let text = if file_transfer {
@@ -1483,11 +1490,10 @@ pub fn settings(cx: &Ctx) -> Frame {
         out.push(Hit { rect: r, action: Action::Toggle(Switch::Vibrate) });
     }
     y = widgets::section(&mut c, t, f, vibration.bottom, l.pick(["通用", "一般", "General"]));
-    let open = s.home_sections.iter().all(|sec| !sec.collapsed) && !s.home_rest_collapsed;
     let general = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(LANGUAGE)).icon(BLUE, Icon::Globe).trail(Trail::Value(l.name())),
         Row::new(l.pick(TIME_ZONE)).icon(ORANGE, Icon::Clock).trail(Trail::Value(s.zone_name())),
-        Row::new(l.pick(["首页分类展开", "首頁分類展開", "Home sections open"])).icon(PURPLE, Icon::Layers).trail(Trail::Switch(open)),
+        Row::new(l.pick(["首页分类展开", "首頁分類展開", "Home sections open"])).icon(PURPLE, Icon::Layers).trail(Trail::Switch(s.home_keep_open)),
     ]);
     out.extend(hits(
         &general.rows,

@@ -208,12 +208,10 @@ impl App {
             }
             // 首页分类展开：一下全摊开 / 一下全折起。单独点某一栏只改那一栏，
             // 两者都记进设置，重进 REC 还是那个样子（2026-11-28 用户要的）。
+            // 它不是「一下全摊开」：开着 = 记住这一栏那一栏的展开状态，下次起来
+            // 照旧；关掉 = 每次起来全折起（2026-11-28 用户纠正的）。
             Action::Toggle(Switch::HomeOpen) => {
-                let open = self.state.home_sections.iter().all(|sec| !sec.collapsed) && !self.state.home_rest_collapsed;
-                for sec in &mut self.state.home_sections {
-                    sec.collapsed = open;
-                }
-                self.state.home_rest_collapsed = open;
+                self.state.home_keep_open = !self.state.home_keep_open;
                 self.refresh();
             }
             Action::Toggle(switch) => {
@@ -2176,36 +2174,46 @@ mod tests {
     use super::*;
     use crate::app::testing::*;
 
-    /// 「首页分类展开」开关：一下全摊开，再一下全折起。
+    /// 「首页分类展开」不是「一下全摊开」：开着 = 记住上次的样子，关掉 = 每次
+    /// 起来全折起（2026-11-28 用户纠正的）。
     #[test]
-    fn the_home_open_switch_opens_and_folds_every_section() {
+    fn the_home_open_switch_is_about_remembering_not_expanding() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Home, &f, &i);
         app.materialize_home();
+        app.state.home_sections[2].collapsed = true;
+        app.state.home_sections[3].collapsed = true;
         app.act(Action::Toggle(Switch::HomeOpen), 0);
-        assert!(app.state.home_sections.iter().all(|sec| !sec.collapsed), "第一下全摊开");
-        assert!(!app.state.home_rest_collapsed, "「其他」也摊开");
-        app.act(Action::Toggle(Switch::HomeOpen), 0);
-        assert!(app.state.home_sections.iter().all(|sec| sec.collapsed), "再一下全折起");
-        assert!(app.state.home_rest_collapsed, "「其他」也折起");
-    }
-
-    /// 折起来的那一栏记进设置：下次起来还是折着的，摊开的那栏也还是摊开的。
-    #[test]
-    fn which_sections_are_open_is_kept_in_the_settings() {
-        let (f, i) = (fonts(), info());
-        let mut app = opened(Screen::Home, &f, &i);
-        app.materialize_home();
-        app.act(Action::Toggle(Switch::HomeOpen), 0);
-        app.act(Action::HomeFoldSection(1), 0);
-        assert!(app.state.home_sections[1].collapsed, "第 2 栏被折起来");
+        assert!(!app.state.home_keep_open, "点一下只是把「记住」关掉");
+        assert!(app.state.home_sections[2].collapsed, "当前展开状态不动");
         let text = app.settings().text();
-        let read = crate::settings::Settings::read(&text).expect("写出去的设置读得回来");
+        let read = crate::settings::Settings::read(&text).expect("读得回来");
         let mut again = App::new(Screen::Home, W, H, PPD);
         again.take_settings(Some(&read), Some(Lang::Hans));
-        again.materialize_home();
-        assert!(!again.state.home_sections[0].collapsed, "第 1 栏还是摊开的");
-        assert!(again.state.home_sections[1].collapsed, "第 2 栏还是折着的");
+        assert!(again.state.home_sections.iter().all(|sec| sec.collapsed), "不记住就全折起");
+        app.act(Action::Toggle(Switch::HomeOpen), 0);
+        let text = app.settings().text();
+        let read = crate::settings::Settings::read(&text).expect("读得回来");
+        let mut again = App::new(Screen::Home, W, H, PPD);
+        again.take_settings(Some(&read), Some(Lang::Hans));
+        assert!(!again.state.home_sections[0].collapsed, "第 1 栏本来就没折");
+        assert!(again.state.home_sections[2].collapsed, "第 3 栏照旧折着");
+        assert!(again.state.home_sections[3].collapsed, "第 4 栏照旧折着");
+    }
+
+    /// 这条也是首页上的一条：排序页里有它，点它就是换开关。
+    #[test]
+    fn the_home_open_entry_is_an_ordinary_home_row() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::HomeOrder, &f, &i);
+        app.materialize_home();
+        assert!(
+            app.order_rows().iter().any(|(list, at)| app.order_entry(*list, *at) == Some(Entry::HomeOpen)),
+            "排序页里有这一条"
+        );
+        let before = app.state.home_keep_open;
+        app.act(Action::Toggle(Switch::HomeOpen), 0);
+        assert_ne!(app.state.home_keep_open, before);
     }
 
     /// 勾中一条分区：它下面多出「导出」那一行，页面顺势往下挪一行，别让它

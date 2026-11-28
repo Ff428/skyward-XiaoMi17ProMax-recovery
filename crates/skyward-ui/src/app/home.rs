@@ -133,6 +133,8 @@ pub enum Entry {
     SkywardUpdate,
     /// 打开首页排序页；它自己也是一条，可以摆在首页或任何分类里。
     HomeOrder,
+    /// 首页分类展开（记得住上次打开的那几栏）。
+    HomeOpen,
     /// 文件传输：点进去是它自己的页，开关在那页上。
     FileTransfer,
     // 高级页去掉之后搬过来的：原来只在那一页里点到的东西，现在都是首页条目。
@@ -224,6 +226,7 @@ impl Entry {
             Entry::Wipe => "wipe",
             Entry::SkywardUpdate => "skyward_update",
             Entry::HomeOrder => "home_order",
+            Entry::HomeOpen => "home_open",
             Entry::FileTransfer => "file_transfer",
             Entry::Decrypt => "decrypt",
             Entry::Terminal => "terminal",
@@ -260,6 +263,7 @@ impl Entry {
             "wipe" => Entry::Wipe,
             "skyward_update" => Entry::SkywardUpdate,
             "home_order" => Entry::HomeOrder,
+            "home_open" => Entry::HomeOpen,
             "file_transfer" => Entry::FileTransfer,
             "decrypt" => Entry::Decrypt,
             "terminal" => Entry::Terminal,
@@ -298,6 +302,7 @@ impl Entry {
             Entry::Wipe => l.pick(["清除数据", "清除資料", "Wipe data"]),
             Entry::SkywardUpdate => l.pick(["版本更新", "版本更新", "Version update"]),
             Entry::HomeOrder => l.pick(["首页排序", "首頁排序", "Home order"]),
+            Entry::HomeOpen => l.pick(["首页分类展开", "首頁分類展開", "Home sections open"]),
             Entry::FileTransfer => l.pick(["文件传输", "檔案傳輸", "File transfer"]),
             Entry::Decrypt => l.pick(["解密数据", "解密資料", "Decrypt data"]),
             Entry::Terminal => l.pick(["模拟终端", "模擬終端", "Terminal emulator"]),
@@ -332,6 +337,8 @@ impl Entry {
     pub fn action(self) -> crate::app::Action {
         match self {
             Entry::Usb => crate::app::Action::FilesOtg,
+            // 这一条在首页上是开关：点一下换一档，不翻页。
+            Entry::HomeOpen => crate::app::Action::Toggle(crate::app::Switch::HomeOpen),
             _ => crate::app::Action::Open(self.screen()),
         }
     }
@@ -352,6 +359,7 @@ impl Entry {
             Entry::Wipe => Screen::Wipe,
             Entry::SkywardUpdate => Screen::SkywardUpdate,
             Entry::HomeOrder => Screen::HomeOrder,
+            Entry::HomeOpen => Screen::Settings,
             Entry::FileTransfer => Screen::FileTransfer,
             Entry::Decrypt => Screen::Decrypt,
             Entry::Terminal => Screen::Terminal,
@@ -387,6 +395,7 @@ impl Entry {
             Entry::Reboot | Entry::Shutdown => Icon::Power,
             Entry::Wipe => Icon::Wipe,
             Entry::HomeOrder => Icon::Sort,
+            Entry::HomeOpen => Icon::Layers,
             Entry::FileTransfer => Icon::Usb,
             Entry::Decrypt => Icon::Lock,
             Entry::Terminal => Icon::Terminal,
@@ -409,6 +418,8 @@ impl Entry {
 pub fn default_rest() -> Vec<Entry> {
     let mut rest = DEFAULT_ORDER.to_vec();
     rest.extend(ADVANCED);
+    // 新加的条目也算在「全集」里：老设置里没有它，`normalize` 会把它补进「其他」。
+    rest.push(Entry::HomeOpen);
     rest
 }
 
@@ -522,7 +533,7 @@ mod tests {
         for entry in &rest {
             assert!(seen.insert(entry.id()), "{} 只出现一次", entry.id());
         }
-        assert_eq!(rest.len(), DEFAULT_ORDER.len() + ADVANCED.len());
+        assert_eq!(rest.len(), DEFAULT_ORDER.len() + ADVANCED.len() + 1, "「其他」的全集里还有「首页分类展开」这一条");
     }
 
     #[test]

@@ -647,6 +647,8 @@ pub struct State {
     /// 每 16 ms 衰减一半，滑到位就清掉（2026-11-28，照系统设置的观感）。
     pub home_slide: Option<(usize, f32)>,
     pub home_rest_collapsed: bool,
+    /// 记住每一栏打开还是折着：开着就按上次的来，关掉就每次起来全折起。
+    pub home_keep_open: bool,
     pub home_rest_name: String,
     /// 排序页拎着的那一条。
     pub home_pick: Option<Entry>,
@@ -863,6 +865,7 @@ impl Default for State {
             home_drag: None,
             home_slide: None,
             home_rest_collapsed: false,
+            home_keep_open: true,
             home_rest_name: String::new(),
             home_pick: None,
             section_edit: None,

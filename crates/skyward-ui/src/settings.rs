@@ -24,6 +24,11 @@ const USB_DRIVE: &str = "usb_drive";
 const LOGS: [&str; 2] = ["recovery", "kernel"];
 const LOG_PLACES: [&str; 2] = ["temporary", "storage"];
 
+/// 老文件里没有这一项时算「记住」。
+fn yes() -> bool {
+    true
+}
+
 /// The settings as they are kept. A value missing is the one a recovery
 /// starts with, and one this version does not know is left out.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,6 +74,9 @@ pub struct Settings {
     /// 「其他」在首页折起来了，以及它的名字。
     #[serde(default, skip_serializing_if = "is_false")]
     pub home_rest_collapsed: bool,
+    /// 记住分类的展开状态；老文件里没有这一项时按「记住」来。
+    #[serde(default = "yes")]
+    pub home_open: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub home_rest_name: String,
     /// 「其他」摆在分类之间的哪个位置；没有就是末尾。
@@ -212,6 +220,7 @@ impl Settings {
             entry_names: state.entry_names.clone(),
             home_rest_at: state.home_rest_at.filter(|at| *at < state.home_sections.len()),
             home_rest_collapsed: state.home_rest_collapsed,
+            home_open: state.home_keep_open,
             home_rest_name: state.home_rest_name.clone(),
             home_top: state.home_top.iter().map(|entry| entry.id().to_string()).collect(),
             home_rest: if state.home_sections.is_empty() && state.home_top.is_empty() && crate::app::rest_is_default(&state.home_rest) {
@@ -316,6 +325,7 @@ impl Settings {
         state.home_top = top;
         state.home_rest = rest;
         state.home_rest_collapsed = self.home_rest_collapsed;
+        state.home_keep_open = self.home_open;
         state.home_rest_name = self.home_rest_name.clone();
         state.home_title = self.home_title.clone();
         state.entry_names = self.entry_names.clone();

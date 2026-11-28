@@ -2869,6 +2869,14 @@ impl App {
         // 上一版的出厂摆法（一栏「刷机与备份」+ 其余全在「其他」）换成这一版
         // 的四栏；自己分过组、改过名的一律不动（2026-11-28）。
         home::upgrade(&mut self.state);
+        // 「首页分类展开」关掉：不用记，每次起来都是全折起（2026-11-28 用户的
+        // 意思：开着才按上次的来，关掉就一律收起）。
+        if !self.state.home_keep_open {
+            for section in &mut self.state.home_sections {
+                section.collapsed = true;
+            }
+            self.state.home_rest_collapsed = true;
+        }
         self.refresh();
     }
 
