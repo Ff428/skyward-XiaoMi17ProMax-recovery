@@ -167,10 +167,24 @@ pub fn upgrade(state: &mut super::State) {
         && state.home_sections[0].entries == vec![Entry::Install, Entry::Backup, Entry::Restore]
         && same_set(&state.home_rest, &old_rest);
 
-    // 0.8.21 那版的四栏：顶置只有无线网络，四栏与「其他」都对得上。
-    let four = state.home_top == vec![Entry::Wlan]
+    // 0.8.21 那版的四栏。顶上那一条有两种存法：`[wlan]`，以及「恢复默认顺序」
+    // 写过的那种（`home_top` 空、`wlan` 落在「其他」里）。
+    let mut old_rest = vec![
+        Entry::Tasks,
+        Entry::Record,
+        Entry::Mount,
+        Entry::Filesystems,
+        Entry::Shutdown,
+    ];
+    let top_ok = if state.home_top.is_empty() {
+        old_rest.push(Entry::Wlan);
+        true
+    } else {
+        state.home_top == vec![Entry::Wlan]
+    };
+    let four = top_ok
         && shape(&state.home_sections) == shape(&old_four(l))
-        && same_set(&state.home_rest, &[Entry::Tasks, Entry::Record, Entry::Mount, Entry::Filesystems, Entry::Shutdown]);
+        && same_set(&state.home_rest, &old_rest);
 
     if !(single || four) {
         return;
@@ -649,6 +663,25 @@ mod tests {
         state.home_top = vec![Entry::Wlan];
         state.home_sections = old_four(Lang::Hans);
         state.home_rest = vec![Entry::Tasks, Entry::Record, Entry::Mount, Entry::Filesystems, Entry::Shutdown];
+        upgrade(&mut state);
+        assert_eq!(state.home_top, DEFAULT_TOP.to_vec());
+        assert_eq!(state.home_sections.len(), 3);
+        assert_eq!(state.home_rest, FACTORY_REST.to_vec());
+    }
+
+    #[test]
+    fn the_reset_shape_with_wlan_in_the_rest_bucket_is_upgraded_too() {
+        let mut state = crate::app::State::default();
+        state.home_top.clear();
+        state.home_sections = old_four(Lang::Hans);
+        state.home_rest = vec![
+            Entry::Wlan,
+            Entry::Tasks,
+            Entry::Record,
+            Entry::Mount,
+            Entry::Filesystems,
+            Entry::Shutdown,
+        ];
         upgrade(&mut state);
         assert_eq!(state.home_top, DEFAULT_TOP.to_vec());
         assert_eq!(state.home_sections.len(), 3);

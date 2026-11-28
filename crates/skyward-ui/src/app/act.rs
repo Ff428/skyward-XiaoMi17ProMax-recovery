@@ -1092,21 +1092,16 @@ impl App {
                 return self.back(now);
             }
             Action::HomeReset => {
-                self.materialize_home();
-                // 恢复默认也把条目自己起的名字清掉，回到页面自带的名字。
+                // 恢复的是出厂的摆法本身：顶置四条、三栏、其余进「其他」。
+                // 以前这里是「清空 top，其余全塞进其他」，点完变成「四栏 + 其他 6 条」，
+                // 跟出厂（`factory`）不是一回事（2026-11-28 用户按出来才发现）。
+                let (top, sections, rest) = home::factory(l);
                 self.state.entry_names.clear();
                 self.state.home_title.clear();
                 self.state.home_rest_at = None;
-                self.state.home_sections = default_sections(l);
-                self.state.home_rest_collapsed = false;
-                self.state.home_rest_name.clear();
-                self.state.home_top.clear();
-                self.state.home_rest = crate::app::home::default_rest();
-                let mut sections = self.state.home_sections.clone();
-                let mut top = self.state.home_top.clone();
-                let mut rest = self.state.home_rest.clone();
-                normalize(&mut sections, &mut top, &mut rest);
                 self.state.home_sections = sections;
+                self.state.home_rest_collapsed = true;
+                self.state.home_rest_name.clear();
                 self.state.home_top = top;
                 self.state.home_rest = rest;
                 self.state.home_pick = None;
