@@ -1645,7 +1645,7 @@ enum OrderList {
 }
 
 /// 拖动时隔多久才算下一次（触摸比屏幕快，全接就掉帧）与震动冷却。
-const DRAG_STEP_MS: u64 = 28;
+const DRAG_STEP_MS: u64 = 16;
 const HAPTIC_STEP_MS: u64 = 80;
 
 /// 手指拎着的一条：哪一条，整页第一行的顶与行距，整页一共几行。行高一样，
@@ -1654,10 +1654,13 @@ const HAPTIC_STEP_MS: u64 = 80;
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct EntryDrag {
     entry: Entry,
-    first_y: f32,
+    /// 一条普通行的高度（判断「最后一行过了中线」用）。
     row_h: f32,
+    /// 整页一共几行。
     total: usize,
 }
+
+
 
 /// 手指拖着的那一枚磁贴：它自己，和手指现在在哪儿。
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1894,6 +1897,9 @@ pub struct App {
     /// the part of the page it lies on as drawn and as drawn held down.
     row_press: Option<RowPress>,
     row_art: Option<(Canvas, Canvas)>,
+    /// 排序页拖动时每一行在页面坐标里的顶，按 y 升序（拎起来那一刻取的，
+    /// 拖动时槽位不变，所以一整趟都按它算落点）。
+    drag_edges: Vec<f32>,
     /// How the page showed on the last frame, while it can be drawn so
     /// again: until it is rendered anew.
     shown: Option<View>,
@@ -2003,6 +2009,7 @@ impl App {
             morph: None,
             row_press: None,
             row_art: None,
+            drag_edges: Vec::new(),
             shown: None,
             turn: None,
             layer: None,
@@ -2056,6 +2063,11 @@ impl App {
 
     fn top_mut(&mut self) -> &mut (Screen, f32, Focus) {
         self.stack.last_mut().expect("the page stack always holds a page")
+    }
+
+    /// 手指正拎着排序页上的一条走：这一轮只该收输入、画那一帧，别的都等松手。
+    pub fn dragging(&self) -> bool {
+        matches!(self.drag, Drag::EntryDrag(_))
     }
 
     /// 当前页滚到哪儿了（页面坐标里第一行的顶）。探针与测试用。
@@ -2692,31 +2704,31 @@ impl App {
     /// 分类还只在显示层，先落进 state 再拎。
     fn lift_entry(&mut self, entry: Entry) -> Option<EntryDrag> {
         self.materialize_home();
-        let first = {
+        let (edges, row_h) = {
             let frame = self.frame.as_ref()?;
-            let mut first_y = f32::MAX;
-            let mut row_h = 0.0;
-            let mut total = 0;
-            for hit in &frame.hits {
-                if !matches!(hit.action, Action::HomePick(_)) {
-                    continue;
-                }
-                total += 1;
-                if hit.rect.y < first_y {
-                    first_y = hit.rect.y;
-                    row_h = hit.rect.h;
-                }
-            }
-            (first_y, row_h, total)
+            let mut edges: Vec<f32> = frame
+                .hits
+                .iter()
+                .filter(|h| matches!(h.action, Action::HomePick(_)))
+                .map(|h| h.rect.y)
+                .collect();
+            let row_h = frame
+                .hits
+                .iter()
+                .find(|h| matches!(h.action, Action::HomePick(_)))
+                .map_or(0.0, |h| h.rect.h);
+            edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            (edges, row_h)
         };
-        let (first_y, row_h, total) = first;
+        let total = edges.len();
         if total == 0 || row_h <= 0.0 {
             return None;
         }
+        self.drag_edges = edges;
         if !self.order_rows().iter().any(|(list, at)| self.order_entry(*list, *at) == Some(entry)) {
             return None;
         }
-        Some(EntryDrag { entry, first_y, row_h, total })
+        Some(EntryDrag { entry, row_h, total })
     }
 
     /// 某一栏里第 `at` 格是哪一条。
@@ -2729,19 +2741,31 @@ impl App {
     }
 
     /// 手指在 `y`（屏幕坐标）这一处，把拎着的那一条放到它该去的地方：跑到第一
-    /// 行上面就是顶置，否则落到那一行所在的栏。松手时也调它一遍 —— 最后一个
-    /// Move 可能被节流丢掉，落下时用的是上一次的位置（2026-11-28）。
+    /// 行上面就是顶置；否则落进手指下那一行的位置（那一行往后让一格，看着就是
+    /// 「压在这一行上面」）；到了最后一行的中线以下就是整页最底下。
+    /// 松手时也调它一遍 —— 最后一个 Move 可能被节流丢掉，落下时用的是上一次
+    /// 的位置（2026-11-28）。
     fn settle_drag(&mut self, drag: EntryDrag, y: f32) -> bool {
         let page_y = y + self.top().1;
-        if page_y < drag.first_y {
-            return self.move_entry_to_top(drag.entry);
+        let total = drag.total.max(1);
+        let edges = std::mem::take(&mut self.drag_edges);
+        if edges.is_empty() {
+            return false;
         }
-        // 落点是「空档」不是「哪一行」：指尖过了一行的中线就算落在它后面。
-        // 原来按行算，拖到最末一行时只能插到它前面，最后一条永远放不到底
-        // （2026-11-28 用户报的）。
-        let rel = page_y - drag.first_y;
-        let gap = (((rel + drag.row_h * 0.5) / drag.row_h).floor().max(0.0) as usize).min(drag.total);
-        self.move_entry_to_gap(drag.entry, gap)
+        let moved = if page_y < edges[0] {
+            // 第一行上面：那是「单独放在首页」那一段。
+            self.move_entry_to_top(drag.entry)
+        } else if page_y >= edges[edges.len() - 1] + drag.row_h * 0.5 {
+            // 最后一行过了中线：整页最底下。
+            self.move_entry_to_end(drag.entry)
+        } else {
+            // 手指落在哪一行上，就顶掉它那一格（行顶是按这一帧的真实位置取的，
+            // 栏头的高度也算在内，不会一格一格地偏）。
+            let at = (edges.partition_point(|&top| top <= page_y) - 1).min(total - 1);
+            self.move_entry_to_row(drag.entry, at)
+        };
+        self.drag_edges = edges;
+        moved
     }
 
     /// 拎到「单独放在首页」那一段：放进顶置的第一格。
@@ -2758,24 +2782,18 @@ impl App {
         true
     }
 
-    /// 把拎着的那一条挪到整页的第 `flat` 行前面（短按那套「点一条、再点
-    /// 另一条」用它）。
+    /// 把拎着的那一条挪到整页的第 `flat` 行：那一条往后让一格，它占那一格。
     fn move_entry_to_row(&mut self, entry: Entry, flat: usize) -> bool {
         let plan = self.order_rows();
-        let Some(&(target, at)) = plan.get(flat.min(plan.len().saturating_sub(1))) else {
+        let Some(&(target, _)) = plan.get(flat.min(plan.len().saturating_sub(1))) else {
             return false;
         };
-        self.put_entry(entry, target, at)
-    }
-
-    /// 把拎着的那一条挪到整页的第 `gap` 个空档：0 是最上面，`total` 是最下面。
-    fn move_entry_to_gap(&mut self, entry: Entry, gap: usize) -> bool {
-        let plan = self.order_rows();
-        let Some(&(target, _)) = plan.get(gap) else {
-            return self.move_entry_to_end(entry);
-        };
-        // 这一栏里排在空档前面的还有几条，就是它该插到第几格。
-        let at = plan[..gap].iter().filter(|(list, _)| *list == target).count();
+        let (from_list, from) = self.order_place(entry);
+        // 目标栏里排在它前面、又不是它自己的有几条 —— 就是摘掉自己之后该插的位置。
+        let at = plan[..flat.min(plan.len())]
+            .iter()
+            .filter(|(list, idx)| *list == target && !(*list == from_list && *idx == from))
+            .count();
         self.put_entry(entry, target, at)
     }
 
@@ -2785,16 +2803,19 @@ impl App {
         let Some(&(target, _)) = plan.last() else {
             return false;
         };
-        let at = plan.iter().filter(|(list, _)| *list == target).count();
+        let (from_list, from) = self.order_place(entry);
+        let at = plan
+            .iter()
+            .filter(|(list, idx)| *list == target && !(*list == from_list && *idx == from))
+            .count();
         self.put_entry(entry, target, at)
     }
 
-    /// 把一条从它现在的位置摘下来，插进 `target` 这个列表的第 `at` 格。
+    /// 把一条从它现在的位置摘下来，插进 `target` 这个列表的第 `at` 格
+    /// （`at` 是摘掉自己之后的位置）。真的挪动了才返回 true。
     fn put_entry(&mut self, entry: Entry, target: OrderList, at: usize) -> bool {
+        let was = self.order_flat();
         let (from_list, from) = self.order_place(entry);
-        if from_list == target && from == at {
-            return false;
-        }
         match from_list {
             OrderList::Top => {
                 self.state.home_top.remove(from);
@@ -2808,8 +2829,6 @@ impl App {
                 self.state.home_rest.remove(from);
             }
         }
-        // 先摘掉自己：同一栏里排在后面的格子都往前一位。
-        let at = if from_list == target && from < at { at - 1 } else { at };
         match target {
             OrderList::Top => {
                 let n = self.state.home_top.len();
@@ -2827,7 +2846,12 @@ impl App {
                 self.state.home_rest.insert(at.min(n), entry);
             }
         }
-        true
+        was != self.order_flat()
+    }
+
+    /// 整页从上到下每一条的顺序：只用来判断「有没有真的挪动」。
+    fn order_flat(&self) -> Vec<Entry> {
+        self.order_rows().iter().filter_map(|(list, at)| self.order_entry(*list, *at)).collect()
     }
 
     /// Take the settings `kept` from the starts before, and speak the

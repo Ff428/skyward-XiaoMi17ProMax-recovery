@@ -84,10 +84,12 @@ impl App {
                         self.top_mut().1 = at;
                     }
                     let page_y = y + at;
-                    // 拎着的那一条整行（图标、文字、热区）跟着手指走；到了列表
-                    // 上下头就停住，别让它在边上一直动、一直重画（2026-11-28）。
-                    let last = drag.first_y + (drag.total.saturating_sub(1)) as f32 * drag.row_h;
-                    let ghost = (page_y - drag.row_h / 2.0).clamp(drag.first_y, last.max(drag.first_y));
+                    // 拎着的那一条整行（图标、文字、热区）跟着手指走：整页范围内
+                    // 都跟，不再夹在列表头尾 —— 夹住之后手指还在动、卡片却停住，
+                    // 看着就是「往上拖不动」（2026-11-28 用户报的）。
+                    let before = self.state.home_drag.map(|(_, was)| was);
+                    let page_h = self.height.max(drag.row_h);
+                    let ghost = (page_y - drag.row_h / 2.0).clamp(0.0, (page_h - drag.row_h).max(0.0));
                     self.state.home_drag = Some((drag.entry, ghost));
                     // 手指跑到第一行上面（「单独放在首页」那一段）就是放进顶置。
                     let moved = self.settle_drag(drag, y);
@@ -105,10 +107,10 @@ impl App {
                         }
                     } else {
                         // 浮起那张卡挪了才要重画；手指在同一个像素里抖不算。
-                        let moved_ghost = match self.state.home_drag {
-                            Some((_, was)) => (was - (page_y - drag.row_h / 2.0)).abs() > 0.9,
-                            None => true,
-                        };
+                        // 这里要跟「挪之前」的位置比：上面刚把 home_drag 换成新的，
+                        // 拿新值跟自己比永远是「没动」，卡片就只在换行那一下才重画
+                        // （2026-11-28 真机上量出来的「往上拖一顿一顿」）。
+                        let moved_ghost = before.is_none_or(|was| (was - ghost).abs() > 0.9);
                         if moved_ghost || scrolled {
                             self.dirty = true;
                         }
@@ -123,6 +125,7 @@ impl App {
                     self.drag = Drag::Idle;
                     self.drag_at = None;
                     self.haptic_at = None;
+                    self.drag_edges.clear();
                     self.state.home_drag = None;
                     self.row_press = None;
                     self.row_art = None;

@@ -49,6 +49,9 @@ pub enum Switch {
     ShowPassword,
     /// Keep the time zone the installed system is set to.
     SystemTimeZone,
+    /// 首页的分类栏全都摊开（关掉就全折起来）。单独点某一栏只改那一栏，
+    /// 而且都记得住（2026-11-28 用户要的）。
+    HomeOpen,
 }
 
 /// How long the screen stays on with nothing touched, in milliseconds, in

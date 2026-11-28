@@ -719,7 +719,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
         if top_list.is_empty() {
             y = widgets::footnote(&mut c, t, f, y, l.pick(["拎一条起来，点这里放到最上面", "拎一條起來，點這裡放到最上面", "Pick an entry, then tap here to put it on top"]));
         } else {
-            let shown: Vec<Entry> = top_list.iter().copied().filter(|entry| Some(*entry) != dragged).collect();
+            let shown: Vec<Entry> = top_list.to_vec();
             let rows: Vec<Row> = shown
                 .iter()
                 .map(|entry| {
@@ -800,7 +800,7 @@ pub fn home_order(cx: &Ctx) -> Frame {
             y = widgets::footnote(&mut c, t, f, y + dy, l.pick(["这一栏还是空的", "這一欄還是空的", "Empty for now"])) - dy;
             continue;
         }
-        let shown: Vec<Entry> = section.entries.iter().copied().filter(|entry| Some(*entry) != dragged).collect();
+        let shown: Vec<Entry> = section.entries.clone();
         let rows: Vec<Row> = shown
             .iter()
             .map(|entry| {
@@ -941,7 +941,7 @@ fn order_rest_block(
         return widgets::footnote(c, t, f, y, l.pick(["没有剩下的条目", "沒有剩下的條目", "Nothing left over"]));
     }
     let dragged = s.home_drag.map(|(entry, _)| entry);
-    let shown: Vec<Entry> = rest.iter().copied().filter(|entry| Some(*entry) != dragged).collect();
+    let shown: Vec<Entry> = rest.to_vec();
     let rows: Vec<Row> = shown
         .iter()
         .map(|entry| {
@@ -1483,11 +1483,16 @@ pub fn settings(cx: &Ctx) -> Frame {
         out.push(Hit { rect: r, action: Action::Toggle(Switch::Vibrate) });
     }
     y = widgets::section(&mut c, t, f, vibration.bottom, l.pick(["通用", "一般", "General"]));
+    let open = s.home_sections.iter().all(|sec| !sec.collapsed) && !s.home_rest_collapsed;
     let general = widgets::list(&mut c, t, f, y, &[
         Row::new(l.pick(LANGUAGE)).icon(BLUE, Icon::Globe).trail(Trail::Value(l.name())),
         Row::new(l.pick(TIME_ZONE)).icon(ORANGE, Icon::Clock).trail(Trail::Value(s.zone_name())),
+        Row::new(l.pick(["首页分类展开", "首頁分類展開", "Home sections open"])).icon(PURPLE, Icon::Layers).trail(Trail::Switch(open)),
     ]);
-    out.extend(hits(&general.rows, &[Action::Open(Screen::Language), Action::Open(Screen::TimeZone)]));
+    out.extend(hits(
+        &general.rows,
+        &[Action::Open(Screen::Language), Action::Open(Screen::TimeZone), Action::Toggle(Switch::HomeOpen)],
+    ));
     // USB 那块（文件传输）搬到首页当条目了，设置里不再重复（2026-11-28）。
     let bottom = general.bottom;
     // 终端不在这里：同一个东西开两个入口反而添乱（2026-11-17）。关于与更新
@@ -4804,24 +4809,24 @@ pub fn partitions(cx: &Ctx) -> Frame {
     let mut band: Option<Rows> = None;
     match &s.partitions {
         Some(Ok(list_rows)) if !list_rows.is_empty() => {
-            // 「导出」与提示摆在列表上面：虚拟列表下面画不了东西。
-            match s.dump_pick.and_then(|k| list_rows.get(k).map(|(name, _)| (k, name.clone()))) {
-                Some((k, name)) => {
-                    let note = tr!(l, "导出「{name}」到内部存储", "匯出「{name}」到內部儲存", "Export “{name}” to internal storage");
-                    let one = widgets::list(&mut c, t, f, y, &[Row::new(&note).icon(ORANGE, Icon::Backup)]);
-                    out.extend(hits(&one.rows, &[Action::DumpNow]));
-                    y = one.bottom + t.m.card_gap;
-                    let _ = k;
-                }
-                None => {
-                    y = widgets::footnote(&mut c, t, f, y, l.pick(["点一个分区选中它，再导出成镜像。", "點一個分割區選中它，再匯出成映像檔。", "Tap a partition to choose it, then export it as an image."]));
-                    y += t.m.card_gap;
-                }
+            // 选中的那条底下紧跟一行「导出」：勾哪儿就在哪儿，不用滑回页顶
+            // （2026-11-28 用户提的）。这一行也走虚拟列表，序号整体后移一位。
+            let pick = s.dump_pick.filter(|k| *k < list_rows.len());
+            if pick.is_none() {
+                y = widgets::footnote(&mut c, t, f, y, l.pick(["点一个分区选中它，再导出成镜像。", "點一個分割區選中它，再匯出成映像檔。", "Tap a partition to choose it, then export it as an image."]));
+                y += t.m.card_gap;
             }
             let row_h = widgets::one_height(&c, t, f, &Row::new("x"));
-            let mut edges = Vec::with_capacity(list_rows.len() + 1);
-            for k in 0..=list_rows.len() {
+            let total = list_rows.len() + usize::from(pick.is_some());
+            let mut edges = Vec::with_capacity(total + 1);
+            for k in 0..=total {
                 edges.push(y + k as f32 * row_h);
+            }
+            if let Some(k) = pick {
+                out.push(Hit {
+                    rect: Rect::new(t.m.margin, y + (k as f32 + 1.0) * row_h, t.m.w as f32 - 2.0 * t.m.margin, row_h),
+                    action: Action::DumpNow,
+                });
             }
             band = Some(Rows { edges, action: Some(Action::PickDump) });
         }
@@ -6765,18 +6770,36 @@ pub fn row(screen: Screen, cx: &Ctx, i: usize, c: &mut Canvas) {
         }
         // 分区表的一行：名字在左，大小当行尾。虚拟列表一行一行地要它。
         Screen::Partitions => {
-            if let Some(Ok(list)) = &cx.state.partitions
-                && let Some((name, size)) = list.get(i)
-            {
-                widgets::card_row(c, cx.t, i == 0, i + 1 == list.len());
-                let size = fmt::bytes(*size);
-                let row = Row::new(name).icon(PURPLE, Icon::Layers);
-                let row = if cx.state.dump_pick == Some(i) {
-                    row.trail(Trail::Check(true))
-                } else {
-                    row.trail(Trail::Text(&size))
+            if let Some(Ok(list)) = &cx.state.partitions {
+                let pick = cx.state.dump_pick.filter(|k| *k < list.len());
+                let total = list.len() + usize::from(pick.is_some());
+                widgets::card_row(c, cx.t, i == 0, i + 1 == total);
+                if Some(i) == pick.map(|k| k + 1) {
+                    // 选中那条下面那一行：导出。
+                    let name = &list[pick.expect("checked above")].0;
+                    let note = tr!(
+                        cx.state.lang,
+                        "导出「{name}」到内部存储",
+                        "匯出「{name}」到內部儲存",
+                        "Export “{name}” to internal storage"
+                    );
+                    widgets::draw_one(c, cx.t, cx.f, &Row::new(&note).icon(ORANGE, Icon::Backup));
+                    return;
+                }
+                let at = match pick {
+                    Some(k) if i > k + 1 => i - 1,
+                    _ => i,
                 };
-                widgets::draw_one(c, cx.t, cx.f, &row);
+                if let Some((name, size)) = list.get(at) {
+                    let size = fmt::bytes(*size);
+                let row = Row::new(name).icon(PURPLE, Icon::Layers);
+                    let row = if pick == Some(at) {
+                        row.trail(Trail::Check(true))
+                    } else {
+                        row.trail(Trail::Text(&size))
+                    };
+                    widgets::draw_one(c, cx.t, cx.f, &row);
+                }
             }
         }
         Screen::Installing => widgets::output_row(c, cx.t, cx.f, &cx.state.script_output, i),

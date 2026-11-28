@@ -176,6 +176,19 @@ fn main() {
                 run_seq(&mut app, &mut out, &f, &i, &mut now, &args[idx + 1]);
                 idx += 2;
             }
+            "--pick" => {
+                let n: usize = args[idx + 1].parse().expect("a partition index");
+                app.state.dump_pick = Some(n);
+                app.refresh();
+                settle(&mut app, &mut out, &f, &i, &mut now, 4);
+                idx += 2;
+            }
+            "--scroll" => {
+                let y: f32 = args[idx + 1].parse().expect("a scroll offset");
+                app.scroll_to_y(y);
+                settle(&mut app, &mut out, &f, &i, &mut now, 4);
+                idx += 2;
+            }
             "--bench" => {
                 bench = Some(args[idx + 1].parse().expect("a count"));
                 idx += 2;

@@ -2311,7 +2311,14 @@ impl<'a> Pages<'a> {
             skyward_sys::kmsg("the phone's own parts are up; the opening starts now")?;
             self.start_decrypt(job)?;
         }
-        self.take_readings(now)?;
+        // 手指拎着一条走的时候，这一轮只收输入、画那一帧：每秒轮询的那些
+        // （电池、USB、各个后台任务的进度、设置落盘）留到松手之后。它们每轮
+        // 要读文件、查 worker，几十毫秒就堆在拖动里，看着就是「顶置那块特别
+        // 卡」（2026-11-28 真机上量出来的 turn 10-21 ms）。
+        let dragging = self.app.dragging();
+        if !dragging {
+            self.take_readings(now)?;
+        }
         // In fastboot the page follows fastbootd and the cable each second.
         if self.fastboot && self.port_at.elapsed().as_secs() >= 1 {
             let (running, link) = fastboot_status()?;
@@ -2350,30 +2357,34 @@ impl<'a> Pages<'a> {
             self.readings.ask();
             self.asked = Some(Instant::now());
         }
+        // 拖动时只跳过「每秒轮询」这一串：收输入（`take_in`）一定要跑到，
+        // 不然手指还在动、事件却没人读，拖动就僵在那儿（2026-11-28 踩过）。
         let mut drive_told = None;
-        if self.drive_at.elapsed().as_secs() >= 1 {
-            drive_told = look_for_drive(&mut self.plugged, &mut self.seen)?;
-            self.drive_at = Instant::now();
+        if !dragging {
+            if self.drive_at.elapsed().as_secs() >= 1 {
+                drive_told = look_for_drive(&mut self.plugged, &mut self.seen)?;
+                self.drive_at = Instant::now();
+            }
+            self.installer_told(now)?;
+            self.eraser_told(now)?;
+            self.files_told(now)?;
+            self.relabel_told(now);
+            self.parts_told(now)?;
+            self.backup_told(now);
+            self.merge_told(now)?;
+            self.root_told()?;
+            self.kernelsu_told(now)?;
+            self.magisk_told(now)?;
+            self.versions_told();
+            self.systems_told(now)?;
+            self.wlan_told()?;
+            self.keep_settings(now)?;
+            self.updates_told(now)?;
+            self.skyward_told(now)?;
+            self.decrypt_told(now)?;
+            self.decrypt_stalled(now)?;
+            self.shell_told()?;
         }
-        self.installer_told(now)?;
-        self.eraser_told(now)?;
-        self.files_told(now)?;
-        self.relabel_told(now);
-        self.parts_told(now)?;
-        self.backup_told(now);
-        self.merge_told(now)?;
-        self.root_told()?;
-        self.kernelsu_told(now)?;
-        self.magisk_told(now)?;
-        self.versions_told();
-        self.systems_told(now)?;
-        self.wlan_told()?;
-        self.keep_settings(now)?;
-        self.updates_told(now)?;
-        self.skyward_told(now)?;
-        self.decrypt_told(now)?;
-        self.decrypt_stalled(now)?;
-        self.shell_told()?;
         self.take_in(drive_told, now)?;
         self.offer_storage(now)
     }

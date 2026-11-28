@@ -206,6 +206,16 @@ impl App {
                 self.state.follow_system_zone = !self.state.follow_system_zone;
                 self.refresh();
             }
+            // 首页分类展开：一下全摊开 / 一下全折起。单独点某一栏只改那一栏，
+            // 两者都记进设置，重进 REC 还是那个样子（2026-11-28 用户要的）。
+            Action::Toggle(Switch::HomeOpen) => {
+                let open = self.state.home_sections.iter().all(|sec| !sec.collapsed) && !self.state.home_rest_collapsed;
+                for sec in &mut self.state.home_sections {
+                    sec.collapsed = open;
+                }
+                self.state.home_rest_collapsed = open;
+                self.refresh();
+            }
             Action::Toggle(switch) => {
                 // Keeping the screen lock is a risk taken on, and it is said
                 // every time it is turned on, not once: the switch stays off
@@ -260,6 +270,7 @@ impl App {
                     Switch::Wlan => unreachable!("the WLAN switch is turned above"),
                     Switch::ChargeStep(_) => unreachable!("a charge step is chosen above"),
                     Switch::SystemTimeZone => unreachable!("the switch is turned above"),
+                    Switch::HomeOpen => unreachable!("the sections are opened or folded above"),
                 };
                 *on = !*on;
                 let now_on = *on;
@@ -533,6 +544,13 @@ impl App {
             // 分区页与镜像页：选一个分区、导出一份、选一份镜像、写回或删掉。
             Action::PickDump(k) => {
                 self.state.dump_pick = if self.state.dump_pick == Some(k) { None } else { Some(k) };
+                // 选中的那条下面多出「导出」一行：把它滚进屏幕，别让人再去找
+                // （2026-11-28 用户提的）。
+                if self.state.dump_pick.is_some() {
+                    let step = self.theme().m.row_h;
+                    let at = (self.top().1 + step).min(self.max_scroll());
+                    self.top_mut().1 = at;
+                }
                 self.refresh();
             }
             Action::DumpNow => {
@@ -2158,6 +2176,60 @@ mod tests {
     use super::*;
     use crate::app::testing::*;
 
+    /// 「首页分类展开」开关：一下全摊开，再一下全折起。
+    #[test]
+    fn the_home_open_switch_opens_and_folds_every_section() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Home, &f, &i);
+        app.materialize_home();
+        app.act(Action::Toggle(Switch::HomeOpen), 0);
+        assert!(app.state.home_sections.iter().all(|sec| !sec.collapsed), "第一下全摊开");
+        assert!(!app.state.home_rest_collapsed, "「其他」也摊开");
+        app.act(Action::Toggle(Switch::HomeOpen), 0);
+        assert!(app.state.home_sections.iter().all(|sec| sec.collapsed), "再一下全折起");
+        assert!(app.state.home_rest_collapsed, "「其他」也折起");
+    }
+
+    /// 折起来的那一栏记进设置：下次起来还是折着的，摊开的那栏也还是摊开的。
+    #[test]
+    fn which_sections_are_open_is_kept_in_the_settings() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Home, &f, &i);
+        app.materialize_home();
+        app.act(Action::Toggle(Switch::HomeOpen), 0);
+        app.act(Action::HomeFoldSection(1), 0);
+        assert!(app.state.home_sections[1].collapsed, "第 2 栏被折起来");
+        let text = app.settings().text();
+        let read = crate::settings::Settings::read(&text).expect("写出去的设置读得回来");
+        let mut again = App::new(Screen::Home, W, H, PPD);
+        again.take_settings(Some(&read), Some(Lang::Hans));
+        again.materialize_home();
+        assert!(!again.state.home_sections[0].collapsed, "第 1 栏还是摊开的");
+        assert!(again.state.home_sections[1].collapsed, "第 2 栏还是折着的");
+    }
+
+    /// 勾中一条分区：它下面多出「导出」那一行，页面顺势往下挪一行，别让它
+    /// 落在屏幕外面（2026-11-28 用户提的）。
+    #[test]
+    fn picking_a_partition_brings_the_export_row_into_view() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::Partitions, &f, &i);
+        let rows: Vec<(String, u64)> = (0..166).map(|k| (format!("part{k}"), 1024)).collect();
+        app.state.partitions = Some(Ok(rows));
+        app.refresh();
+        app.scroll_to_y(app.max_scroll());
+        let before = app.scroll_y();
+        let frame = app.frame(&f, &i);
+        assert!(frame.hits.iter().any(|h| h.action == Action::DumpNow) == false, "还没选中，没有导出行");
+        app.act(Action::PickDump(165), 0);
+        let after = app.scroll_y();
+        assert!(after > before, "选中最下面那条，页面往下让一行，导出行才看得见");
+        let theme = app.theme();
+        let frame = app.frame(&f, &i);
+        let hit = frame.hits.iter().find(|h| h.action == Action::DumpNow).expect("选完有导出行");
+        assert!(hit.rect.y < frame.height(&theme), "导出行在页面范围内");
+    }
+
     /// 分区表是虚拟长列表：一百六十多条一路滑到底，没有翻页按钮。
     #[test]
     fn the_partition_list_runs_to_the_last_row_without_pages() {
@@ -2212,6 +2284,28 @@ mod tests {
         let rest = &app.state.home_rest;
         let (a, b) = (rest.iter().position(|e| *e == entry).unwrap(), rest.iter().position(|e| *e == below).unwrap());
         assert!(a > b, "往下拖一格，它就排到原来下面那条的后面");
+    }
+
+    /// 拖到某一行上面：它顶掉那一格，那一行往后让（用户 2026-11-28 报的
+    /// 「拖到充电设置上面，结果跑到它下面」）。
+    #[test]
+    fn dragging_onto_a_row_takes_its_place_not_the_one_below() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::HomeOrder, &f, &i);
+        app.materialize_home();
+        let entries = app.state.home_sections[0].entries.clone();
+        assert!(entries.len() >= 2, "第一栏得有两条才试得了");
+        let (onto, drag) = (entries[0], entries[1]);
+        let at = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::HomePick(drag)).map(|h| h.rect).expect("拖的那一行");
+        let over = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::HomePick(onto)).map(|h| h.rect).expect("落的那一行");
+        let (x, y) = at.centre();
+        app.touch(Touch::Down(x, y), &f, 0);
+        app.tick(600);
+        app.touch(Touch::Move(x, over.centre().1), &f, 700);
+        app.touch(Touch::Up, &f, 800);
+        let now = &app.state.home_sections[0].entries;
+        assert_eq!(now.first(), Some(&drag), "它占了那一行原来的位置");
+        assert_eq!(now.get(1), Some(&onto), "被顶掉的那条往后让一格");
     }
 
     /// 拖到整页最底下（最后一行再往下）：它落到最后一栏的末尾，成为最后一条。
