@@ -9,57 +9,59 @@ use crate::app::Screen;
 use crate::icons::Icon;
 use crate::lang::Lang;
 
-/// 出厂时单独摆在首页最上面、不进任何一栏的。
-pub const DEFAULT_TOP: [Entry; 1] = [Entry::Wlan];
+/// 出厂时单独摆在首页最上面、不进任何一栏的：四条最常用的（2026-11-28 用户
+/// 给的截图口径：无线网络、文件管理、模块管理、安装刷机）。
+pub const DEFAULT_TOP: [Entry; 4] = [Entry::Wlan, Entry::Files, Entry::Modules, Entry::Install];
 
-/// 内置四栏里的条目，按图上的口径（2026-11-28）：刷机备份 3、文件模块 8、
-/// 其他分类 6、系统设置 8。
-const FLASH: [Entry; 3] = [Entry::Install, Entry::Backup, Entry::Restore];
-const FILEWORK: [Entry; 8] = [
-    Entry::FileTransfer,
-    Entry::Files,
-    Entry::Modules,
-    Entry::DataApps,
-    Entry::Usb,
+/// 内置三栏里的条目，按截图上标出来的条数：刷机备份 3、文件模块 5、系统设置 11。
+const FLASH: [Entry; 3] = [Entry::FileTransfer, Entry::Backup, Entry::Restore];
+const FILEWORK: [Entry; 5] = [
     Entry::Relabel,
     Entry::Serve,
+    Entry::Usb,
+    Entry::Filesystems,
     Entry::Fetch,
 ];
-const EXTRA: [Entry; 6] = [Entry::Decrypt, Entry::Terminal, Entry::Partitions, Entry::Avb, Entry::Root, Entry::Update];
-const SETUP: [Entry; 8] = [
+const SETUP: [Entry; 11] = [
     Entry::Systems,
-    Entry::Settings,
-    Entry::Reboot,
-    Entry::Wipe,
-    Entry::SkywardUpdate,
-    Entry::HomeOrder,
-    Entry::Logs,
+    Entry::Root,
+    Entry::DataApps,
+    Entry::Terminal,
+    Entry::Record,
     Entry::Charge,
+    Entry::Mount,
+    Entry::Partitions,
+    Entry::Tasks,
+    Entry::Avb,
+    Entry::Decrypt,
 ];
 
-/// 本仓库比上游多出来的五条：出厂时留在「其他」里，想收进哪一栏自己拖。
-pub const LOOSE: [Entry; 5] = [Entry::Tasks, Entry::Record, Entry::Mount, Entry::Filesystems, Entry::Shutdown];
+/// 出厂时落在「其他」里的那 8 条，按用户手机上那一份的先后。
+pub const FACTORY_REST: [Entry; 8] = [
+    Entry::Settings,
+    Entry::HomeOrder,
+    Entry::Logs,
+    Entry::Wipe,
+    Entry::Update,
+    Entry::SkywardUpdate,
+    Entry::Reboot,
+    Entry::Shutdown,
+];
 
-/// 出厂的那四栏：最常干的三件事一栏，文件与外设一栏，其余工具一栏，
-/// 设置与更新一栏。名字、图标、折叠状态都能改，删掉也随用户。
+/// 出厂的三栏。名字、图标、折叠状态都能改，删掉也随用户。三栏出厂都折着
+/// （截图上就是折的；「首页分类展开」默认关，起来本来就全折）。
 pub fn default_sections(l: Lang) -> Vec<Section> {
     vec![
         Section {
             name: l.pick(["刷机备份", "刷機備份", "Flash & backup"]).to_string(),
             entries: FLASH.to_vec(),
             icon: Icon::Install,
-            collapsed: false,
+            collapsed: true,
         },
         Section {
             name: l.pick(["文件模块", "檔案模組", "Files"]).to_string(),
             entries: FILEWORK.to_vec(),
             icon: Icon::Folder,
-            collapsed: true,
-        },
-        Section {
-            name: l.pick(["其他分类", "其他分類", "Tools"]).to_string(),
-            entries: EXTRA.to_vec(),
-            icon: Icon::Layers,
             collapsed: true,
         },
         Section {
@@ -71,45 +73,108 @@ pub fn default_sections(l: Lang) -> Vec<Section> {
     ]
 }
 
-/// 出厂的摆法：顶置一条，四栏，「其他」里放本仓库多出来的那五条。
+/// 出厂的摆法：顶置四条、三栏、剩下 8 条在「其他」，总计三十一条一条不落。
 pub fn factory(l: Lang) -> (Vec<Entry>, Vec<Section>, Vec<Entry>) {
-    let sections = default_sections(l);
-    let top = DEFAULT_TOP.to_vec();
-    let mut rest = default_rest();
-    rest.retain(|entry| !top.contains(entry));
-    for section in &sections {
-        rest.retain(|entry| !section.entries.contains(entry));
-    }
-    (top, sections, rest)
+    (DEFAULT_TOP.to_vec(), default_sections(l), FACTORY_REST.to_vec())
 }
 
-/// 把上一版的出厂摆法（只有一栏「刷机与备份」、其余全在「其他」）换成这一版
-/// 的四栏。只认「没人动过」的那种形状：栏名还是出厂的、条目一条不多一条不少。
-/// 用户自己分过组、改过名的，一律不动。
+/// 0.8.21 那版的出厂四栏（认「没人动过」的旧摆法用）。
+fn old_four(l: Lang) -> Vec<Section> {
+    vec![
+        Section {
+            name: l.pick(["刷机备份", "刷機備份", "Flash & backup"]).to_string(),
+            entries: vec![Entry::Install, Entry::Backup, Entry::Restore],
+            icon: Icon::Install,
+            collapsed: false,
+        },
+        Section {
+            name: l.pick(["文件模块", "檔案模組", "Files"]).to_string(),
+            entries: vec![
+                Entry::FileTransfer,
+                Entry::Files,
+                Entry::Modules,
+                Entry::DataApps,
+                Entry::Usb,
+                Entry::Relabel,
+                Entry::Serve,
+                Entry::Fetch,
+            ],
+            icon: Icon::Folder,
+            collapsed: true,
+        },
+        Section {
+            name: l.pick(["其他分类", "其他分類", "Tools"]).to_string(),
+            entries: vec![
+                Entry::Decrypt,
+                Entry::Terminal,
+                Entry::Partitions,
+                Entry::Avb,
+                Entry::Root,
+                Entry::Update,
+            ],
+            icon: Icon::Layers,
+            collapsed: true,
+        },
+        Section {
+            name: l.pick(["系统设置", "系統設定", "System"]).to_string(),
+            entries: vec![
+                Entry::Systems,
+                Entry::Settings,
+                Entry::Reboot,
+                Entry::Wipe,
+                Entry::SkywardUpdate,
+                Entry::HomeOrder,
+                Entry::Logs,
+                Entry::Charge,
+            ],
+            icon: Icon::Gear,
+            collapsed: true,
+        },
+    ]
+}
+
+/// 栏名 + 条目，用来比形状；折叠状态不算（用户可能展开过）。
+fn shape(sections: &[Section]) -> Vec<(String, Vec<Entry>)> {
+    sections.iter().map(|s| (s.name.clone(), s.entries.clone())).collect()
+}
+
+/// 两串条目比内容不比先后：用户在「其他」里拖过顺序，不算动过形状。
+fn same_set(a: &[Entry], b: &[Entry]) -> bool {
+    let mut a = a.to_vec();
+    let mut b = b.to_vec();
+    a.sort_by_key(|entry| entry.id());
+    b.sort_by_key(|entry| entry.id());
+    a == b
+}
+
+/// 把历史上「没人动过」的出厂摆法换成这一版的三栏。认两种旧形状：
+/// 0.8.1 之前的一栏「刷机与备份」，以及 0.8.21 的四栏。用户自己分过组、
+/// 改过名的，一律不动。
 pub fn upgrade(state: &mut super::State) {
     let l = state.lang;
-    // 上一版那一栏叫「刷机与备份」，更早的截图里也见过「刷机备份」，两种都认。
+    let (top, sections, rest) = factory(l);
+
+    // 一栏那版：顶上什么都没有，唯一那栏还是出厂名与出厂条目。
     let old_names = [
         l.pick(["刷机与备份", "刷機與備份", "Flash & backup"]).to_string(),
         l.pick(["刷机备份", "刷機備份", "Flash backup"]).to_string(),
     ];
     let mut old_rest = default_rest();
     old_rest.retain(|entry| !FLASH.contains(entry));
-    // 「其他」里那几条的先后用户可能自己拖过（只要有那五条以外的东西在别处
-    // 就说明动过，形状就变了），所以这里只比有没有、不比先后。
-    let mut stored = state.home_rest.clone();
-    let mut want = old_rest.clone();
-    stored.sort_by_key(|entry| entry.id());
-    want.sort_by_key(|entry| entry.id());
-    let untouched = state.home_top.is_empty()
+    let single = state.home_top.is_empty()
         && state.home_sections.len() == 1
         && old_names.contains(&state.home_sections[0].name)
-        && state.home_sections[0].entries == FLASH.to_vec()
-        && stored == want;
-    if !untouched {
+        && state.home_sections[0].entries == vec![Entry::Install, Entry::Backup, Entry::Restore]
+        && same_set(&state.home_rest, &old_rest);
+
+    // 0.8.21 那版的四栏：顶置只有无线网络，四栏与「其他」都对得上。
+    let four = state.home_top == vec![Entry::Wlan]
+        && shape(&state.home_sections) == shape(&old_four(l))
+        && same_set(&state.home_rest, &[Entry::Tasks, Entry::Record, Entry::Mount, Entry::Filesystems, Entry::Shutdown]);
+
+    if !(single || four) {
         return;
     }
-    let (top, sections, rest) = factory(l);
     state.home_top = top;
     state.home_rest_at = Some(sections.len());
     state.home_sections = sections;
@@ -526,28 +591,35 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_sections_are_the_four_on_the_home_page() {
+    fn the_built_in_sections_are_the_three_on_the_home_page() {
         let sections = default_sections(Lang::Hans);
         let names: Vec<&str> = sections.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["刷机备份", "文件模块", "其他分类", "系统设置"]);
-        assert_eq!(sections[0].entries, vec![Entry::Install, Entry::Backup, Entry::Restore]);
-        assert!(!sections[0].collapsed, "第一栏是摊开的，其余三栏折起来");
-        assert!(sections[1..].iter().all(|s| s.collapsed));
-        assert_eq!(sections[1].entries.len(), 8);
-        assert_eq!(sections[2].entries.len(), 6);
-        assert_eq!(sections[3].entries.len(), 8);
+        assert_eq!(names, ["刷机备份", "文件模块", "系统设置"]);
+        assert_eq!(sections[0].entries.len(), 3, "刷机备份 3");
+        assert_eq!(
+            sections[0].entries,
+            vec![Entry::FileTransfer, Entry::Backup, Entry::Restore]
+        );
+        assert_eq!(sections[1].entries.len(), 5, "文件模块 5");
+        assert_eq!(sections[2].entries.len(), 11, "系统设置 11");
+        assert!(sections.iter().all(|s| s.collapsed), "三栏出厂都折着");
     }
 
     #[test]
     fn the_factory_layout_holds_every_entry_exactly_once() {
         let (top, sections, rest) = factory(Lang::Hans);
-        assert_eq!(top, vec![Entry::Wlan], "无线网络单独摆在最上面");
+        assert_eq!(
+            top,
+            vec![Entry::Wlan, Entry::Files, Entry::Modules, Entry::Install],
+            "截图上顶置的四条"
+        );
         let mut seen = std::collections::BTreeSet::new();
         for entry in top.iter().chain(sections.iter().flat_map(|s| s.entries.iter())).chain(rest.iter()) {
             assert!(seen.insert(entry.id()), "{} 只出现一次", entry.id());
         }
         assert_eq!(seen.len(), default_rest().len(), "三十一条一条不少");
-        assert_eq!(rest, LOOSE.to_vec(), "「其他」里是这一版多出来的五条");
+        assert_eq!(rest, FACTORY_REST.to_vec(), "「其他」里是这 8 条");
+        assert_eq!(rest.len(), 8);
     }
 
     #[test]
@@ -557,18 +629,40 @@ mod tests {
         old_rest.retain(|entry| !FLASH.contains(entry));
         state.home_sections = vec![Section {
             name: "刷机与备份".into(),
-            entries: FLASH.to_vec(),
+            entries: vec![Entry::Install, Entry::Backup, Entry::Restore],
             icon: Icon::Install,
             collapsed: false,
         }];
         state.home_rest = old_rest;
         upgrade(&mut state);
-        assert_eq!(state.home_sections.len(), 4, "换成这一版的四栏");
-        assert_eq!(state.home_top, vec![Entry::Wlan]);
-        assert_eq!(state.home_rest, LOOSE.to_vec());
-        // 再跑一次不动它：升级只认那一种旧形状。
+        assert_eq!(state.home_sections.len(), 3, "换成这一版的三栏");
+        assert_eq!(state.home_rest, FACTORY_REST.to_vec());
+        // 再跑一次不动它：升级只认那两种旧形状。
         let before = state.home_sections.len();
         upgrade(&mut state);
         assert_eq!(state.home_sections.len(), before);
+    }
+
+    #[test]
+    fn the_0821_four_section_layout_is_upgraded_to_the_screenshot_one() {
+        let mut state = crate::app::State::default();
+        state.home_top = vec![Entry::Wlan];
+        state.home_sections = old_four(Lang::Hans);
+        state.home_rest = vec![Entry::Tasks, Entry::Record, Entry::Mount, Entry::Filesystems, Entry::Shutdown];
+        upgrade(&mut state);
+        assert_eq!(state.home_top, DEFAULT_TOP.to_vec());
+        assert_eq!(state.home_sections.len(), 3);
+        assert_eq!(state.home_rest, FACTORY_REST.to_vec());
+    }
+
+    #[test]
+    fn a_layout_the_user_made_is_left_alone() {
+        let mut state = crate::app::State::default();
+        state.home_top = vec![Entry::Wlan, Entry::Files];
+        state.home_sections = old_four(Lang::Hans);
+        state.home_rest = vec![Entry::Tasks, Entry::Record, Entry::Mount, Entry::Filesystems, Entry::Shutdown];
+        let before = shape(&state.home_sections);
+        upgrade(&mut state);
+        assert_eq!(shape(&state.home_sections), before, "顶置动过就不算旧形状");
     }
 }

@@ -865,7 +865,7 @@ impl Default for State {
             home_drag: None,
             home_slide: None,
             home_rest_collapsed: false,
-            home_keep_open: true,
+            home_keep_open: false,
             home_rest_name: String::new(),
             home_pick: None,
             section_edit: None,

@@ -24,11 +24,6 @@ const USB_DRIVE: &str = "usb_drive";
 const LOGS: [&str; 2] = ["recovery", "kernel"];
 const LOG_PLACES: [&str; 2] = ["temporary", "storage"];
 
-/// 老文件里没有这一项时算「记住」。
-fn yes() -> bool {
-    true
-}
-
 /// The settings as they are kept. A value missing is the one a recovery
 /// starts with, and one this version does not know is left out.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,8 +69,9 @@ pub struct Settings {
     /// 「其他」在首页折起来了，以及它的名字。
     #[serde(default, skip_serializing_if = "is_false")]
     pub home_rest_collapsed: bool,
-    /// 记住分类的展开状态；老文件里没有这一项时按「记住」来。
-    #[serde(default = "yes")]
+    /// 记住分类的展开状态。默认关：每次起来全折起，老文件里没有这一项也按关算
+    /// （2026-11-28 用户定的默认值）。
+    #[serde(default)]
     pub home_open: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub home_rest_name: String,
