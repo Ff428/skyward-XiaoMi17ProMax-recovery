@@ -1051,6 +1051,10 @@ impl App {
                             let (f, info) = fresh.expect("a page drawn again as it last showed has its rows in view drawn");
                             let mut c = self.spare.pop().unwrap_or_else(|| Canvas::new(out.w, 0));
                             c.resize((rows.edges[i + 1] - rows.edges[i]) as u32);
+                            // 回收来的画布比这一行高的时候留着上一行的像素：行是
+                            // 透明底直接叠在页面上的，不擦干净就两行字互相压着
+                            // （2026-11-28 真机上分区表就是这样花掉的）。
+                            c.clear(Rgba { r: 0, g: 0, b: 0, a: 0 });
                             let cx = Ctx { t, f, info, state: &self.state, term: self.term.as_ref(), band: None };
                             pages::row(screen, &cx, i, &mut c);
                             self.drawn.push((i, c));

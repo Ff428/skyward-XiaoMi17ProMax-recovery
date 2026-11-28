@@ -1797,6 +1797,24 @@ const ROUND_MARK_STROKE: f32 = 1.7;
 
 /// A flat settings card holding `rows`.
 /// 一行单独画进一块画布：画布高度就是这一行的高度，画在它的顶上。
+/// 虚拟长列表的一行：先铺上卡片的那一段（首行圆上边、末行圆下边），行之间
+/// 无缝，看上去还是一张卡。行是自己画自己那一块的，不铺底就只剩字浮在页面
+/// 背景上（2026-11-28 分区表改成虚拟列表之后发现的）。
+pub fn card_row(c: &mut Canvas, t: &Theme, first: bool, last: bool) {
+    let m = &t.m;
+    c.clear(t.pal.bg);
+    let (x, w) = (m.margin, m.w as f32 - 2.0 * m.margin);
+    let h = c.h as f32;
+    let r = m.card_radius;
+    match (first, last) {
+        (true, true) => c.fill_round_rect(x, 0.0, w, h, r, t.pal.card),
+        // 圆的往外多画一截，被画布裁掉，剩下的一头就是方的。
+        (true, false) => c.fill_round_rect(x, 0.0, w, h + r, r, t.pal.card),
+        (false, true) => c.fill_round_rect(x, -r, w, h + r, r, t.pal.card),
+        (false, false) => c.fill_rect(x, 0.0, w, h, t.pal.card),
+    }
+}
+
 pub fn draw_one(c: &mut Canvas, t: &Theme, f: &Fonts, r: &Row) {
     let lay = layout(c, t, f, r);
     draw_row(c, t, f, r, &lay, 0.0, &Tone::page(t));

@@ -1553,6 +1553,11 @@ struct Pages<'a> {
     /// Whether the charger was read as attached the last time, so a change is
     /// said once rather than every second.
     charge_present: bool,
+    /// 「画一帧超过这么多毫秒就记一条」的门限，默认 50；调 /metadata/skyward/
+    /// frame-ms 可以改小，量拖动到底多少毫秒（2026-11-28）。
+    frame_ms: u128,
+    /// 一轮（收输入 + 做事 + 画）超过这么多毫秒就记一条，默认 120。
+    turn_ms: u128,
     /// Whether the panel's frame memory has been blacked out for an off
     /// panel; cleared once a real frame is shown again.
     blanked: bool,
@@ -1975,6 +1980,8 @@ impl<'a> Pages<'a> {
             asked: None,
             charge_said: false,
             charge_present: false,
+            frame_ms: 50,
+            turn_ms: 120,
             blanked: false,
             rested_at: None,
             fastboot,
@@ -2312,6 +2319,12 @@ impl<'a> Pages<'a> {
             self.port_at = Instant::now();
         }
         let (lit, shown) = self.show(now)?;
+        // 现场取证：`/data/local/tmp/debug` 一出现就存一张 PNG 到
+        // /data/local/tmp/live.png，并把当前页与摆法写进 kmsg，然后把那个文件
+        // 删掉。recovery 里没有 framebuffer、screencap 是空壳，这是唯一能看见
+        // 「此时此刻屏幕上是什么」的路子（2026-11-28）。放在 turn 这一层，
+        // 不靠「有没有重画」触发。
+        self.capture_if_asked()?;
         // 屏刚从暗到亮：告诉触摸控制器「显示开了」。息屏很久之后的第一下
         // 滑动就靠这一句（2026-11-23）。
         if lit && !self.lit_before {
@@ -2322,7 +2335,7 @@ impl<'a> Pages<'a> {
         // 去就是满日志的假警报）。主页刚出来那段点不动的时候，这行能分出是主
         // 循环被画图和后台回填拖住，还是触摸根本没进来（2026-11-23）。
         let spent = began.elapsed().as_millis();
-        if spent >= 120 {
+        if spent >= self.turn_ms {
             let _ = skyward_sys::kmsg(&format!("a turn spent {spent} ms before waiting"));
         }
         self.wait(sleeper, uevents, now, lit, shown)?;
@@ -2576,6 +2589,76 @@ impl<'a> Pages<'a> {
         }
     }
 
+    /// 现场取一张当前屏幕的 PNG，并把页面状态写进 kmsg：只有
+    /// `/data/local/tmp/debug` 存在时才做一次，做完把那个文件删掉。
+    /// 顺带从 `/data/local/tmp/frame-ms` 读帧耗时门限，方便把「一帧多久」
+    /// 放到真机上量（2026-11-28）。
+    fn capture_if_asked(&mut self) -> Result<()> {
+        const ASK: &str = "/data/local/tmp/debug";
+        const GATE: &str = "/data/local/tmp/frame-ms";
+        const OUT: &str = "/data/local/tmp/live.png";
+        if let Ok(text) = fs::read_to_string(GATE)
+            && let Ok(ms) = text.trim().parse::<u128>()
+        {
+            self.frame_ms = ms.max(1);
+            self.turn_ms = self.frame_ms;
+        }
+        if !Path::new(ASK).exists() {
+            return Ok(());
+        }
+        let s = &self.app.state;
+        let sections: Vec<String> = s
+            .home_sections
+            .iter()
+            .map(|sec| format!("{}[{}]{}", sec.name, sec.entries.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(","), if sec.collapsed { "(folded)" } else { "" }))
+            .collect();
+        let line = format!(
+            "debug: page={:?} scroll={:.0} top=[{}] sections=[{}] rest=[{}]",
+            self.app.screen(),
+            self.app.scroll_y(),
+            s.home_top.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(","),
+            sections.join(" | "),
+            s.home_rest.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(","),
+        );
+        let _ = skyward_sys::kmsg(&line);
+        // 这一屏所有可点区域的坐标也写出来：电脑那一侧要按名字点（比如
+        // PartPage(1)、Open(Partitions)），不必靠猜。y 是页面坐标，减掉
+        // scroll 就是屏幕坐标。
+        let scroll = self.app.scroll_y();
+        let mut rows: Vec<String> = Vec::new();
+        rows.push(format!("scroll {scroll:.1}"));
+        {
+            let frame = self.app.frame(&self.fonts, &self.info);
+            let mut hits: Vec<(f32, f32, f32, f32, String)> = frame
+                .hits
+                .iter()
+                .map(|h| (h.rect.y, h.rect.x, h.rect.w, h.rect.h, format!("{:?}", h.action)))
+                .collect();
+            hits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            for (y, x, w, h, action) in hits {
+                rows.push(format!("{y:.1}	{x:.1}	{w:.1}	{h:.1}	{action}"));
+            }
+        }
+        let _ = fs::write("/data/local/tmp/hits.txt", rows.join("
+") + "
+");
+        let written = (|| -> Result<()> {
+            let file = fs::File::create(OUT).with_context(|| format!("create {OUT}"))?;
+            self.screen.write_png(std::io::BufWriter::new(file))?;
+            Ok(())
+        })();
+        match written {
+            Ok(()) => {
+                let _ = skyward_sys::kmsg(&format!("debug: wrote {OUT}"));
+            }
+            Err(e) => {
+                let _ = skyward_sys::kmsg(&format!("debug: could not write {OUT}: {e}"));
+            }
+        }
+        let _ = fs::remove_file(ASK);
+        Ok(())
+    }
+
     /// Put the page on the panel where it changed, and light the panel,
     /// rest it or turn it off as the page asks. Gives whether the panel is
     /// lit, and whether a frame was shown.
@@ -2596,7 +2679,7 @@ impl<'a> Pages<'a> {
                 self.surface.present(&self.screen)?;
                 // 一帧画得久了就记一条：翻页卡顿这类问题靠它定位。
                 let ms = t0.elapsed().as_millis();
-                if ms >= 50 {
+                if ms >= self.frame_ms {
                     let _ = skyward_sys::kmsg(&format!("frame {:?} took {ms} ms", self.app.screen()));
                 }
                 if let Some(path) = self.dump {

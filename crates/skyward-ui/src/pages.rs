@@ -4797,59 +4797,39 @@ pub fn partitions(cx: &Ctx) -> Frame {
     ));
     let mut y = list.bottom + t.m.card_gap;
     y = widgets::section(&mut c, t, f, y, l.pick(["分区", "分割區", "Partitions"]));
+    // 分区表一百六十多条：整页画进画布要十几屏，画布装不下就被截在屏幕口上
+    // （文字断、卡片底是直角）。改成虚拟长列表（和文件管理、终端输出同一条
+    // 通道）：画布只画到列表开头，下面的行滚进屏幕时才画，一路滑到最底，
+    // 没有上一页、下一页（2026-11-28 用户要的，跟无线网络页一样）。
+    let mut band: Option<Rows> = None;
     match &s.partitions {
-        Some(Ok(list_rows)) => {
-            // 这台机器 by-name 底下有一百六十几条，一次画进画布要十几屏；画布
-            // 装不下就被截在屏幕口上——文字断、卡片底是直角。三十条一页，
-            // 翻页用列表末尾那两行（2026-11-28：按钮，不要滑动翻页）。
-            let per = 30usize;
-            let pages = list_rows.len().div_ceil(per).max(1);
-            let page = s.part_page.min(pages - 1);
-            let from = page * per;
-            let to = (from + per).min(list_rows.len());
-            let names: Vec<String> = list_rows[from..to].iter().map(|(name, _)| name.clone()).collect();
-            let sizes: Vec<String> = list_rows[from..to].iter().map(|(_, size)| fmt::bytes(*size)).collect();
-            let tally = format!("{} / {}", page + 1, pages);
-            let mut shown: Vec<Row> = Vec::new();
-            for (k, (name, size)) in names.iter().zip(&sizes).enumerate() {
-                let row = Row::new(name).icon(PURPLE, Icon::Layers);
-                shown.push(if s.dump_pick == Some(from + k) { row.trail(Trail::Check(true)) } else { row.trail(Trail::Text(size)) });
-            }
-            // 翻页摆在列表最后：上一页 / 下一页（右边写第几页 / 共几页）。
-            let mut acts: Vec<Action> = (0..names.len()).map(|k| Action::PickDump(from + k)).collect();
-            if pages > 1 {
-                if page > 0 {
-                    shown.push(Row::new(l.pick(["上一页", "上一頁", "Previous"])).icon(SLATE, Icon::Layers).trail(Trail::Arrow));
-                }
-                shown.push(Row::new(l.pick(["下一页", "下一頁", "Next"])).icon(BLUE, Icon::Layers).trail(Trail::Text(tally.as_str())));
-            }
-            // 翻页时这一屏从上下滑进来，不是一下换成新的。
-            let dy = s.part_slide.unwrap_or(0.0);
-            let pick = widgets::list(&mut c, t, f, y + dy, &shown);
-            if pages > 1 {
-                if page > 0 {
-                    acts.push(Action::PartPage(-1));
-                }
-                acts.push(Action::PartPage(1));
-            }
-            out.extend(hits(&pick.rows, &acts));
-            y = pick.bottom - dy + t.m.card_gap;
-            match s.dump_pick.and_then(|k| names.get(k).cloned()) {
-                Some(name) => {
+        Some(Ok(list_rows)) if !list_rows.is_empty() => {
+            // 「导出」与提示摆在列表上面：虚拟列表下面画不了东西。
+            match s.dump_pick.and_then(|k| list_rows.get(k).map(|(name, _)| (k, name.clone()))) {
+                Some((k, name)) => {
                     let note = tr!(l, "导出「{name}」到内部存储", "匯出「{name}」到內部儲存", "Export “{name}” to internal storage");
                     let one = widgets::list(&mut c, t, f, y, &[Row::new(&note).icon(ORANGE, Icon::Backup)]);
                     out.extend(hits(&one.rows, &[Action::DumpNow]));
                     y = one.bottom + t.m.card_gap;
+                    let _ = k;
                 }
                 None => {
                     y = widgets::footnote(&mut c, t, f, y, l.pick(["点一个分区选中它，再导出成镜像。", "點一個分割區選中它，再匯出成映像檔。", "Tap a partition to choose it, then export it as an image."]));
+                    y += t.m.card_gap;
                 }
             }
+            let row_h = widgets::one_height(&c, t, f, &Row::new("x"));
+            let mut edges = Vec::with_capacity(list_rows.len() + 1);
+            for k in 0..=list_rows.len() {
+                edges.push(y + k as f32 * row_h);
+            }
+            band = Some(Rows { edges, action: Some(Action::PickDump) });
         }
         Some(Err(why)) => y = widgets::footnote(&mut c, t, f, y, why),
         None => y = widgets::footnote(&mut c, t, f, y, l.pick(["正在读取", "正在讀取", "Reading"])),
+        _ => {}
     }
-    Frame::new(t, fit(c, t, y), out, l.pick(["分区管理", "分割區管理", "Partitions"]), top)
+    Frame { rows: band, ..Frame::new(t, fit(c, t, y), out, l.pick(["分区管理", "分割區管理", "Partitions"]), top) }
 }
 
 /// 分区镜像：把一个分区原样导出成 `.img`（旁边留一份 sha256），把已有的镜像
@@ -6782,6 +6762,22 @@ pub fn row(screen: Screen, cx: &Ctx, i: usize, c: &mut Canvas) {
             let entries = folder.entries.as_ref().expect("a folder listed draws its rows");
             let chosen = cx.state.choosing && cx.state.chosen.contains(&entries[i].name);
             files::row_marked(c, cx.t, cx.f, cx.state.lang, &entries[i], folder.listed, cx.state.zone(), chosen);
+        }
+        // 分区表的一行：名字在左，大小当行尾。虚拟列表一行一行地要它。
+        Screen::Partitions => {
+            if let Some(Ok(list)) = &cx.state.partitions
+                && let Some((name, size)) = list.get(i)
+            {
+                widgets::card_row(c, cx.t, i == 0, i + 1 == list.len());
+                let size = fmt::bytes(*size);
+                let row = Row::new(name).icon(PURPLE, Icon::Layers);
+                let row = if cx.state.dump_pick == Some(i) {
+                    row.trail(Trail::Check(true))
+                } else {
+                    row.trail(Trail::Text(&size))
+                };
+                widgets::draw_one(c, cx.t, cx.f, &row);
+            }
         }
         Screen::Installing => widgets::output_row(c, cx.t, cx.f, &cx.state.script_output, i),
         Screen::PartWork => {

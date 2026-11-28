@@ -1037,25 +1037,6 @@ impl App {
                 }
             }
             // 删掉存储里的一份布局：页面上那一行右边的那枚是它。
-            Action::PartPage(by) => {
-                // 最后那一页再点「下一页」不能再涨页码：涨了以后要连点四下
-                // 「上一页」才回得去（2026-11-28 用户实测）。
-                let per = 30usize;
-                let pages = match &self.state.partitions {
-                    Some(Ok(rows)) => rows.len().div_ceil(per).max(1),
-                    _ => 1,
-                };
-                let page = (self.state.part_page as i32 + by).clamp(0, pages as i32 - 1);
-                if page as usize == self.state.part_page {
-                    return Vec::new();
-                }
-                self.state.part_page = page as usize;
-                // 新一页从下面/上面滑进来，收到 0：往后翻从下方进，往前翻从上方进。
-                let tall = self.theme().m.h as f32;
-                self.state.part_slide = Some(if by > 0 { tall } else { -tall });
-                self.refresh();
-                return Vec::new();
-            }
             Action::DeleteLayout(at) => {
                 if let Some(Ok(files)) = &self.state.layouts
                     && let Some(file) = files.get(at)
@@ -2177,22 +2158,19 @@ mod tests {
     use super::*;
     use crate::app::testing::*;
 
-    /// 分区翻到最后一页以后，「下一页」不能再往上加页码 —— 加了以后要连点
-    /// 好几下「上一页」才回得去（2026-11-28 用户实测的）。
+    /// 分区表是虚拟长列表：一百六十多条一路滑到底，没有翻页按钮。
     #[test]
-    fn the_last_partition_page_does_not_roll_further() {
+    fn the_partition_list_runs_to_the_last_row_without_pages() {
         let (f, i) = (fonts(), info());
         let mut app = opened(Screen::Partitions, &f, &i);
-        let rows: Vec<(String, u64)> = (0..61).map(|k| (format!("part{k}"), 1024)).collect();
+        let rows: Vec<(String, u64)> = (0..166).map(|k| (format!("part{k}"), 1024)).collect();
         app.state.partitions = Some(Ok(rows));
-        app.state.part_page = 2; // 61 条 30 一页 = 3 页，最后一页是 2（从 0 数）
-        app.act(Action::PartPage(1), 0);
-        assert_eq!(app.state.part_page, 2, "最后一页再点下一页，页码不动");
-        app.act(Action::PartPage(-1), 0);
-        assert_eq!(app.state.part_page, 1, "点一下上一页回到第 2 页");
-        app.state.part_page = 0;
-        app.act(Action::PartPage(-1), 0);
-        assert_eq!(app.state.part_page, 0, "第一页再点上一页也不动");
+        app.refresh();
+        let frame = app.frame(&f, &i);
+        let band = frame.rows.as_ref().expect("分区表按长列表画");
+        assert_eq!(band.count(), 166, "每一行都在列表里");
+        assert!(band.bottom() > 166.0 * 100.0, "列表比画布长得多，靠滚动到底");
+        assert!(frame.canvas.h < band.bottom() as u32, "画布只画到列表开头，不整页铺");
     }
 
     /// 从「其他」里长按拎一条拖到最上面（「单独放在首页」那一段），松手它
@@ -2234,6 +2212,32 @@ mod tests {
         let rest = &app.state.home_rest;
         let (a, b) = (rest.iter().position(|e| *e == entry).unwrap(), rest.iter().position(|e| *e == below).unwrap());
         assert!(a > b, "往下拖一格，它就排到原来下面那条的后面");
+    }
+
+    /// 拖到整页最底下（最后一行再往下）：它落到最后一栏的末尾，成为最后一条。
+    #[test]
+    fn dragging_past_the_last_row_puts_it_at_the_very_bottom() {
+        let (f, i) = (fonts(), info());
+        let mut app = opened(Screen::HomeOrder, &f, &i);
+        app.materialize_home();
+        let entry = app.state.home_rest[0];
+        let at = app.frame(&f, &i).hits.iter().find(|h| h.action == Action::HomePick(entry)).map(|h| h.rect).expect("第一行");
+        let (x, y) = at.centre();
+        app.touch(Touch::Down(x, y), &f, 0);
+        app.tick(600);
+        // 页面滚到最底，再把手指放到最后一行下面老远。
+        app.scroll_to_y(app.max_scroll());
+        let last = app
+            .frame(&f, &i)
+            .hits
+            .iter()
+            .filter(|h| matches!(h.action, Action::HomePick(_)))
+            .map(|h| h.rect.y + h.rect.h)
+            .fold(0.0_f32, f32::max);
+        app.touch(Touch::Move(x, last - app.scroll_y() + 200.0), &f, 700);
+        app.touch(Touch::Up, &f, 800);
+        assert_eq!(app.state.home_rest.last(), Some(&entry), "最后一条就是它");
+        assert_eq!(app.order_rows().last().map(|_| ()), Some(()), "整页最后一行不是它前面的那条");
     }
 
     #[test]

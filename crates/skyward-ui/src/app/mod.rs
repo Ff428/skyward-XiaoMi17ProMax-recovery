@@ -664,8 +664,6 @@ pub enum Action {
     /// 把现在这一份布局写成文件；以及从存储里第几个文件导入。
     ExportLayout,
     ImportLayout(usize),
-    /// 分区管理翻页：正数往后、负数往前。
-    PartPage(i32),
     /// 删掉存储里的这一份布局（索引见 `State::layouts`）。
     DeleteLayout(usize),
     /// 挑位置：进导出用的目录浏览、进导入用的文件浏览、上一层、进一层、
@@ -2060,6 +2058,17 @@ impl App {
         self.stack.last_mut().expect("the page stack always holds a page")
     }
 
+    /// 当前页滚到哪儿了（页面坐标里第一行的顶）。探针与测试用。
+    pub fn scroll_y(&self) -> f32 {
+        self.top().1
+    }
+
+    /// 把当前页滚到 `y`，不夹取、不做动画：探针在真机上按需跳到某一屏。
+    pub fn scroll_to_y(&mut self, y: f32) {
+        self.top_mut().1 = y;
+        self.refresh();
+    }
+
     /// Whether the panel needs a new frame since the last call.
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
@@ -2118,7 +2127,7 @@ impl App {
             return Some(now + INSTALL_FRAME_MS);
         }
         // 排序页那一栏正滑回来、分区那一屏正滑进来：每 16 ms 要一帧。
-        if self.state.home_slide.is_some() || self.state.part_slide.is_some() {
+        if self.state.home_slide.is_some() {
             return Some(now + 16);
         }
         let held = match self.drag {
@@ -2426,13 +2435,6 @@ impl App {
             self.drag = Drag::Held;
             fx.extend(self.held_entry(i));
         }
-        // 分区翻页：那一屏从上下滑到位（2026-11-28）。
-        if let Some(slide) = self.state.part_slide {
-            // 0.82 一帧：一屏高约三十帧滑到位，起手不跳、收尾不急（2026-11-28）。
-            let next = slide * 0.82;
-            self.state.part_slide = if next.abs() < 2.0 { None } else { Some(next) };
-            self.refresh();
-        }
         // 那一栏滑回自己的位置：每帧收一半，收到看不清就停（2026-11-28）。
         if let Some((slot, slide)) = self.state.home_slide {
             let next = slide * 0.42;
@@ -2734,9 +2736,12 @@ impl App {
         if page_y < drag.first_y {
             return self.move_entry_to_top(drag.entry);
         }
-        let span = drag.total.max(1) as f32;
-        let at = (((page_y - drag.first_y) / drag.row_h).floor()).clamp(0.0, span - 1.0) as usize;
-        self.move_entry_to_row(drag.entry, at)
+        // 落点是「空档」不是「哪一行」：指尖过了一行的中线就算落在它后面。
+        // 原来按行算，拖到最末一行时只能插到它前面，最后一条永远放不到底
+        // （2026-11-28 用户报的）。
+        let rel = page_y - drag.first_y;
+        let gap = (((rel + drag.row_h * 0.5) / drag.row_h).floor().max(0.0) as usize).min(drag.total);
+        self.move_entry_to_gap(drag.entry, gap)
     }
 
     /// 拎到「单独放在首页」那一段：放进顶置的第一格。
@@ -2753,13 +2758,39 @@ impl App {
         true
     }
 
-    /// 把拎着的那一条挪到整页的第 `flat` 行：那一行在哪一栏就进哪一栏，
-    /// 所以「其他」里的条目能拖进刷机备份，也能拖进文件模块。
+    /// 把拎着的那一条挪到整页的第 `flat` 行前面（短按那套「点一条、再点
+    /// 另一条」用它）。
     fn move_entry_to_row(&mut self, entry: Entry, flat: usize) -> bool {
         let plan = self.order_rows();
         let Some(&(target, at)) = plan.get(flat.min(plan.len().saturating_sub(1))) else {
             return false;
         };
+        self.put_entry(entry, target, at)
+    }
+
+    /// 把拎着的那一条挪到整页的第 `gap` 个空档：0 是最上面，`total` 是最下面。
+    fn move_entry_to_gap(&mut self, entry: Entry, gap: usize) -> bool {
+        let plan = self.order_rows();
+        let Some(&(target, _)) = plan.get(gap) else {
+            return self.move_entry_to_end(entry);
+        };
+        // 这一栏里排在空档前面的还有几条，就是它该插到第几格。
+        let at = plan[..gap].iter().filter(|(list, _)| *list == target).count();
+        self.put_entry(entry, target, at)
+    }
+
+    /// 放到整页的最底下：最后一栏的末尾。
+    fn move_entry_to_end(&mut self, entry: Entry) -> bool {
+        let plan = self.order_rows();
+        let Some(&(target, _)) = plan.last() else {
+            return false;
+        };
+        let at = plan.iter().filter(|(list, _)| *list == target).count();
+        self.put_entry(entry, target, at)
+    }
+
+    /// 把一条从它现在的位置摘下来，插进 `target` 这个列表的第 `at` 格。
+    fn put_entry(&mut self, entry: Entry, target: OrderList, at: usize) -> bool {
         let (from_list, from) = self.order_place(entry);
         if from_list == target && from == at {
             return false;
@@ -2777,7 +2808,7 @@ impl App {
                 self.state.home_rest.remove(from);
             }
         }
-        // 同一列里往下挪：先摘掉自己，后面的格子都往前一位。
+        // 先摘掉自己：同一栏里排在后面的格子都往前一位。
         let at = if from_list == target && from < at { at - 1 } else { at };
         match target {
             OrderList::Top => {

@@ -640,11 +640,6 @@ pub struct State {
     /// 没进任何分类、也不置顶的条目，落在首页最下面的「其他」里。
     pub home_rest: Vec<Entry>,
     /// 「其他」在首页折起来了，以及它的名字（空着用「其他」）。
-    /// 分区翻页时那一屏从上下滑进来的位移（像素），收到 0 就清掉。
-    pub part_slide: Option<f32>,
-    /// 分区管理翻到第几页：一百六十几个分区，一次画进画布要十几屏，
-    /// 画布装不下就会被截断（2026-11-28）。
-    pub part_page: usize,
     /// 排序页上正被拎着的那一条，以及它跟到哪儿（页面坐标里那一行的顶）。
     /// 画的时候它从列表里拿掉、单独画在手指底下（2026-11-28）。
     pub home_drag: Option<(Entry, f32)>,
@@ -865,8 +860,6 @@ impl Default for State {
             home_sections: Vec::new(),
             home_top: Vec::new(),
             home_rest: crate::app::home::default_rest(),
-            part_slide: None,
-            part_page: 0,
             home_drag: None,
             home_slide: None,
             home_rest_collapsed: false,
