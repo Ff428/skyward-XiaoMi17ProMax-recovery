@@ -2199,21 +2199,11 @@ mod tests {
         assert!(!again.state.home_sections[0].collapsed, "第 1 栏本来就没折");
         assert!(again.state.home_sections[2].collapsed, "第 3 栏照旧折着");
         assert!(again.state.home_sections[3].collapsed, "第 4 栏照旧折着");
-    }
-
-    /// 这条也是首页上的一条：排序页里有它，点它就是换开关。
-    #[test]
-    fn the_home_open_entry_is_an_ordinary_home_row() {
-        let (f, i) = (fonts(), info());
-        let mut app = opened(Screen::HomeOrder, &f, &i);
-        app.materialize_home();
-        assert!(
-            app.order_rows().iter().any(|(list, at)| app.order_entry(*list, *at) == Some(Entry::HomeOpen)),
-            "排序页里有这一条"
-        );
-        let before = app.state.home_keep_open;
-        app.act(Action::Toggle(Switch::HomeOpen), 0);
-        assert_ne!(app.state.home_keep_open, before);
+        // 入口只有一处：排序页「新建分类」下面那一行（设置页与首页条目都没有了）。
+        let mut order = App::new(Screen::HomeOrder, W, H, PPD);
+        order.materialize_home();
+        let hits = order.frame(&f, &i).hits.clone();
+        assert!(hits.iter().any(|h| h.action == Action::Toggle(Switch::HomeOpen)), "排序页里有这一行");
     }
 
     /// 勾中一条分区：它下面多出「导出」那一行，页面顺势往下挪一行，别让它
