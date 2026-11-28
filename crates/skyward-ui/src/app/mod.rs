@@ -53,6 +53,7 @@ mod manager;
 mod magisk;
 mod mount;
 mod nav;
+mod palette;
 mod partitions;
 mod power;
 mod prefs;
@@ -68,6 +69,8 @@ mod testing;
 mod tiles;
 mod update;
 mod wipe;
+
+pub(crate) use palette::{accent_of, background_of, tile_of};
 mod wlan;
 
 pub use backup::*;
@@ -140,6 +143,10 @@ pub enum Screen {
     HomeTitle,
     /// 布局导出成文件、从文件导入。
     Layout,
+    /// 主题颜色：壁纸、四套主题、三组颜色（2026-11-28）。
+    ThemeColours,
+    /// 挑一张壁纸：壁纸文件夹里的图。
+    ThemeWallpapers,
     /// 挑布局的位置：导出时挑一个目录，导入时挑一个文件。
     LayoutBrowse,
     /// 某一栏自己的页面：栏里条目排序、往里移、移出去、改名删除。
@@ -384,7 +391,24 @@ pub enum Action {
     /// Try opening the data partition again, after it did not open.
     OpenData,
     Back,
+    /// 选设置页那两套（老入口，留着给「深色」那一行）。
     Theme { dark: bool },
+    /// 主题颜色页：换四套主题里的哪一套。
+    ThemeTo(u8),
+    /// 主题颜色页上的一组折叠／展开：0 壁纸、1 强调色、2 页面背景、3 磁贴底色。
+    FoldPalette(usize),
+    /// 进「挑一张图」那一页。
+    WallpaperPick,
+    /// 去掉壁纸。
+    WallpaperClear,
+    /// 选中文件夹里的第几张图。
+    WallpaperChoose(usize),
+    /// 重新读一遍壁纸文件夹。
+    WallpaperReload,
+    /// 颜色用回主题自带的。
+    AccentReset,
+    BackgroundReset,
+    TileReset,
     Toggle(Switch),
     RebootTarget(usize),
     /// Choose or leave out what the wipe page erases.
@@ -2031,11 +2055,8 @@ impl App {
     }
 
     pub fn theme(&self) -> Theme {
-        if self.state.dark {
-            Theme::dark(self.w, self.h, self.px_per_dp)
-        } else {
-            Theme::light(self.w, self.h, self.px_per_dp)
-        }
+        let s = &self.state;
+        Theme::of(s.theme, self.w, self.h, self.px_per_dp).tinted(s.accent, s.background).veiled(s.foreground, s.wallpaper_paper.is_some())
     }
 
     /// Whether a download asked for on the download page is under way, which

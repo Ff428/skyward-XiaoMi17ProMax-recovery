@@ -2013,6 +2013,33 @@ pub fn slider(c: &mut Canvas, t: &Theme, x: f32, top: f32, w: f32, value: f32) {
     c.fill_circle(x + fw - h / 2.0, top + h / 2.0, m.slider_knob / 2.0, Rgba::rgb(255, 255, 255));
 }
 
+/// 一叠滑杆合成一张卡：items 是（标题, 值 0..1）。返回每根的 track 与卡底。
+/// 五根分五张卡的话一屏全被滑杆吃掉（2026-11-28 主人要求并成一张）。
+pub fn slider_stack(c: &mut Canvas, t: &Theme, f: &Fonts, top: f32, items: &[(&str, f32)]) -> (Vec<Rect>, f32) {
+    let m = &t.m;
+    let (x0, x1) = (m.margin, m.w as f32 - m.margin);
+    let pad = m.dp(14.0);
+    let name_h = m.dp(22.0);
+    let gap = m.dp(12.0);
+    let row_h = name_h + m.slider_h + gap;
+    let h = pad * 2.0 + row_h * items.len() as f32;
+    c.fill_round_rect(x0, top, x1 - x0, h, m.card_radius, t.pal.card);
+    let mut tracks = Vec::new();
+    let mut y = top + pad;
+    for (label, value) in items {
+        c.text(&f.body, label, x0 + pad, y + m.dp(15.0), m.dp(15.0), t.pal.subtitle, None);
+        let text = format!("{:.2}", value);
+        let vw = c.text_width(&f.body, &text, m.dp(15.0));
+        c.text(&f.body, &text, x1 - pad - vw, y + m.dp(15.0), m.dp(15.0), t.pal.text, None);
+        y += name_h;
+        let track = Rect::new(x0 + pad, y, (x1 - x0) - pad * 2.0, m.slider_h);
+        slider(c, t, track.x, track.y, track.w, *value);
+        tracks.push(track);
+        y += m.slider_h + gap;
+    }
+    (tracks, top + h)
+}
+
 /// Where a slider card ends, its track, and the row under the slider.
 pub struct SliderBlock {
     pub bottom: f32,

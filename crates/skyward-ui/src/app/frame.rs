@@ -222,7 +222,7 @@ impl Frame {
             content_top,
             hero: None,
             pattern: None,
-            bg: t.pal.bg,
+            bg: t.veil,
             rows: None,
             pinned: None,
             fold: None,

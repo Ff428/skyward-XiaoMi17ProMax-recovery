@@ -21,6 +21,8 @@ impl App {
                             ["按音量键调节振动强度，按电源键完成", "按音量鍵調整震動強度，按電源鍵完成", "Set the vibration with the volume keys, then press the power key"]
                         }
                         Slider::ThermalLimit => ["按音量键调节电池温度上限，按电源键完成", "按音量鍵調整電池溫度上限，按電源鍵完成", "Set the battery temperature limit with the volume keys, then press the power key"],
+                        // 主题颜色页上那几根（2026-11-28）。
+                        _ => ["按音量键调节这条滑杆，按电源键完成", "按音量鍵調整這條滑桿，按電源鍵完成", "Set this slider with the volume keys, then press the power key"],
                     };
                     self.say(l.pick(said), now);
                 }

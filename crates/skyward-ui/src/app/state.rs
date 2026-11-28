@@ -266,6 +266,32 @@ pub struct State {
     /// start, where otherwise it is the one the system names.
     pub language_chosen: bool,
     pub dark: bool,
+    /// 主题号：0 亮、1 暗、2 柔光、3 暗光（2026-11-28）。`dark` 是它的影子，
+    /// 老代码只看 `dark`，两边在写设置时归一化。
+    pub theme: u8,
+    /// 自定义主色 / 页面底色 / 磁贴底色，各 `[r, g, b]`；`None` 用主题自带的。
+    pub accent: Option<(u8, u8, u8)>,
+    pub background: Option<(u8, u8, u8)>,
+    pub tile_tint: Option<(u8, u8, u8)>,
+    /// 壁纸文件夹与选中的那一张；`paper` 是解好、缩到屏幕大小的那张
+    /// （2026-11-28，壁纸改成自己的文件夹）。
+    pub wallpaper_dir: String,
+    pub wallpaper_file: Option<String>,
+    pub wallpaper_paper: Option<crate::wallpaper::Wallpaper>,
+    /// 文件夹里能当壁纸的图；`None` 还没读过，`Err` 是读不出来。
+    pub wallpaper_files: Option<Result<Vec<std::path::PathBuf>, String>>,
+    /// 壁纸压暗、缩放、取哪一块，以及盖在页面上的薄纱有多实。
+    pub wallpaper_dim: f32,
+    pub wallpaper_zoom: f32,
+    pub wallpaper_pan_x: f32,
+    pub wallpaper_pan_y: f32,
+    pub foreground: f32,
+    /// 主题颜色页上四组的展开状态：壁纸、强调色、页面背景、磁贴底色。
+    pub palette_open: [bool; 4],
+    /// 挑图那一页的缩略图，跟着  一起读出来。
+    pub wallpaper_thumbs: Vec<(String, crate::wallpaper::Wallpaper)>,
+    /// 缩放/位置滑杆动过，壁纸要按原图重新采样（松手时才做）。
+    pub paper_dirty: bool,
     pub brightness: f32,
     /// How long the screen stays on with nothing touched, by its place in
     /// [`SCREEN_OFF`].
@@ -699,6 +725,22 @@ impl Default for State {
             lang: Lang::Hans,
             language_chosen: false,
             dark: false,
+            theme: 0,
+            accent: None,
+            background: None,
+            tile_tint: None,
+            wallpaper_dir: crate::wallpaper::DEFAULT_DIR.to_string(),
+            wallpaper_file: None,
+            wallpaper_paper: None,
+            wallpaper_files: None,
+            wallpaper_dim: 0.35,
+            wallpaper_zoom: 1.0,
+            wallpaper_pan_x: 0.5,
+            wallpaper_pan_y: 0.5,
+            foreground: 0.8,
+            palette_open: [false; 4],
+            wallpaper_thumbs: Vec::new(),
+            paper_dirty: false,
             brightness: SLIDER_START,
             // Two minutes.
             screen_off: 3,

@@ -1091,6 +1091,8 @@ impl App {
             // The battery's limit is a whole degree, and it is set on the
             // charge page rather than in the control centre.
             Slider::ThermalLimit => {}
+            // 主题颜色页的那几根不在控制中心上（2026-11-28）。
+            _ => {}
         }
         self.dirty = true;
     }

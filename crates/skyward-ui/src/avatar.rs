@@ -40,6 +40,15 @@ impl Avatar {
     }
 }
 
+/// 解一张图：像素、宽、高、通道数（2026-11-28，壁纸那边用同一条路）。
+pub(crate) fn decode(bytes: &[u8], path: &Path) -> Result<(Vec<u8>, u32, u32, usize)> {
+    match bytes {
+        [0xFF, 0xD8, ..] => jpeg(bytes, path),
+        [0x89, b'P', b'N', b'G', ..] => png(bytes, path),
+        _ => anyhow::bail!("{} is neither a JPEG nor a PNG", path.display()),
+    }
+}
+
 /// A PNG's pixels, normalized to eight bits a channel.
 fn png(bytes: &[u8], path: &Path) -> Result<(Vec<u8>, u32, u32, usize)> {
     let _ = path;

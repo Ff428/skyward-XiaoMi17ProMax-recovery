@@ -37,6 +37,39 @@ pub struct Settings {
     /// names none, as fastboot's does.
     pub spoken: Option<String>,
     pub dark: bool,
+    /// 主题号：0 亮、1 暗、2 柔光、3 暗光；老设置文件没有这个键，就按
+    /// `dark` 推（2026-11-28）。
+    #[serde(default)]
+    pub theme: Option<u8>,
+    /// 自定义主色 `[r, g, b]`；没有就用主题自带的。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<[u8; 3]>,
+    /// 自定义页面底色 `[r, g, b]`；没有就用主题自带的。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<[u8; 3]>,
+    /// 磁贴底色 `[r, g, b]`：只管控制中心里关着的那些磁贴（2026-11-28）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tile_tint: Option<[u8; 3]>,
+    /// 壁纸文件夹；空着就用默认那个。
+    #[serde(default)]
+    pub wallpaper_dir: String,
+    /// 选的是文件夹里的哪一张。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper_file: Option<String>,
+    /// 壁纸压暗的程度，0..1。
+    #[serde(default)]
+    pub wallpaper_dim: f32,
+    /// 壁纸缩放，1.0 起。
+    #[serde(default)]
+    pub wallpaper_zoom: f32,
+    #[serde(default)]
+    pub wallpaper_pan_x: f32,
+    #[serde(default)]
+    pub wallpaper_pan_y: f32,
+    /// 盖在壁纸上的那层薄纱有多实，0..1；老设置文件里没有这一栏，按
+    /// 默认的 0.8 算（2026-11-28）。
+    #[serde(default = "foreground_default")]
+    pub foreground: f32,
     /// The brightness slider's place, from 0 at its left end to 1.
     pub brightness: f32,
     /// How long the screen stays on with nothing touched, in seconds; 0
@@ -97,6 +130,11 @@ pub struct Settings {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// 「前景」这一栏是后加的：老设置文件里没有它，按 0.8 算。
+fn foreground_default() -> f32 {
+    0.8
 }
 
 /// 设置文件里的一栏：名字与条目 id。
@@ -178,7 +216,20 @@ impl Settings {
         Settings {
             language: state.language_chosen.then(|| state.lang.tag().to_string()),
             spoken: Some(state.lang.tag().to_string()),
-            dark: state.dark,
+            // `dark` 是主题的影子：写文件时按主题号归一化，避免手工构造的
+            // 状态里两份不一致，来回一圈就变了（2026-11-28）。
+            dark: state.theme == 1 || state.theme == 3,
+            theme: Some(state.theme),
+            accent: state.accent.map(|(r, g, b)| [r, g, b]),
+            background: state.background.map(|(r, g, b)| [r, g, b]),
+            tile_tint: state.tile_tint.map(|(r, g, b)| [r, g, b]),
+            wallpaper_dir: state.wallpaper_dir.clone(),
+            wallpaper_file: state.wallpaper_file.clone(),
+            wallpaper_dim: state.wallpaper_dim,
+            wallpaper_zoom: state.wallpaper_zoom,
+            wallpaper_pan_x: state.wallpaper_pan_x,
+            wallpaper_pan_y: state.wallpaper_pan_y,
+            foreground: state.foreground,
             brightness: state.brightness,
             screen_off: SCREEN_OFF[state.screen_off].map_or(0, |ms| ms / 1000),
             time_zone: TIME_ZONES[state.time_zone].tz.to_string(),
@@ -256,7 +307,32 @@ impl Settings {
             state.lang = lang;
             state.language_chosen = true;
         }
-        state.dark = self.dark;
+        state.theme = self.theme.unwrap_or(if self.dark { 1 } else { 0 }).min(3);
+        state.accent = self.accent.map(|[r, g, b]| (r, g, b));
+        state.background = self.background.map(|[r, g, b]| (r, g, b));
+        state.tile_tint = self.tile_tint.map(|[r, g, b]| (r, g, b));
+        if (0.0..=1.0).contains(&self.wallpaper_dim) {
+            state.wallpaper_dim = self.wallpaper_dim;
+        }
+        if (1.0..=4.0).contains(&self.wallpaper_zoom) {
+            state.wallpaper_zoom = self.wallpaper_zoom;
+        }
+        if (0.0..=1.0).contains(&self.wallpaper_pan_x) {
+            state.wallpaper_pan_x = self.wallpaper_pan_x;
+        }
+        if (0.0..=1.0).contains(&self.wallpaper_pan_y) {
+            state.wallpaper_pan_y = self.wallpaper_pan_y;
+        }
+        if (0.0..=1.0).contains(&self.foreground) {
+            state.foreground = self.foreground;
+        }
+        // 老设置文件里没有这一栏：空着就保留默认的文件夹，别把主人手上的
+        // 路径清掉（2026-11-28）。
+        if !self.wallpaper_dir.trim().is_empty() {
+            state.wallpaper_dir = self.wallpaper_dir.trim().to_string();
+        }
+        state.wallpaper_file = self.wallpaper_file.clone();
+        state.dark = state.theme == 1 || state.theme == 3;
         if (0.0..=1.0).contains(&self.brightness) {
             state.brightness = self.brightness;
         }

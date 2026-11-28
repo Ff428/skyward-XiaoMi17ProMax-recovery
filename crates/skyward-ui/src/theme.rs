@@ -160,16 +160,79 @@ pub struct Theme {
     pub hero: Hero,
     pub m: Metrics,
     pub dark: bool,
+    /// 盖在壁纸上的那一层薄纱。页面上直接画的字（大标题、分区名、主题名）
+    /// 压的是它，不是主题自己的页面色，所以它的厚薄由「前景」那根滑杆定。
+    /// 没有壁纸时 alpha 是 255，等于就是页面色（2026-11-28）。
+    pub veil: Rgba,
 }
 
 impl Theme {
     /// `px_per_dp` is the panel density over 160, e.g. 3.0 at 480 dpi.
     pub fn light(w: u32, h: u32, px_per_dp: f32) -> Self {
-        Theme { pal: LIGHT, hero: LIGHT_HERO, m: metrics(w, h, px_per_dp), dark: false }
+        Theme { pal: LIGHT, hero: LIGHT_HERO, m: metrics(w, h, px_per_dp), dark: false, veil: LIGHT.bg }
     }
 
     pub fn dark(w: u32, h: u32, px_per_dp: f32) -> Self {
-        Theme { pal: DARK, hero: DARK_HERO, m: metrics(w, h, px_per_dp), dark: true }
+        Theme { pal: DARK, hero: DARK_HERO, m: metrics(w, h, px_per_dp), dark: true, veil: DARK.bg }
+    }
+
+    /// 柔光：淡蓝底、透光白卡、蓝紫点缀（2026-11-28）。
+    pub fn glass(w: u32, h: u32, px_per_dp: f32) -> Self {
+        Theme { pal: GLASS, hero: GLASS_HERO, m: metrics(w, h, px_per_dp), dark: false, veil: GLASS.bg }
+    }
+
+    /// 暗光：柔光的夜间版——近黑的深灰蓝底、透光灰蓝卡（2026-11-28）。
+    pub fn dusk(w: u32, h: u32, px_per_dp: f32) -> Self {
+        Theme { pal: DUSK, hero: DUSK_HERO, m: metrics(w, h, px_per_dp), dark: true, veil: DUSK.bg }
+    }
+
+    /// 按主题号取：0 亮、1 暗、2 柔光、3 暗光。
+    pub fn of(id: u8, w: u32, h: u32, px_per_dp: f32) -> Self {
+        match id {
+            1 => Self::dark(w, h, px_per_dp),
+            2 => Self::glass(w, h, px_per_dp),
+            3 => Self::dusk(w, h, px_per_dp),
+            _ => Self::light(w, h, px_per_dp),
+        }
+    }
+
+    /// Which of the four themes this is: 0 light, 1 dark, 2 glass, 3 dusk.
+    pub fn id(&self) -> u8 {
+        if self.pal.accent == DUSK.accent {
+            3
+        } else if self.dark {
+            1
+        } else if self.pal.accent == GLASS.accent {
+            2
+        } else {
+            0
+        }
+    }
+
+    /// 换上主人自己挑的主色与页面底色。底色一换，卡片与文字按它的亮度
+    /// 换到深底 / 浅底那一套，两端都不会糊（2026-11-28）。
+    pub fn tinted(mut self, accent: Option<(u8, u8, u8)>, background: Option<(u8, u8, u8)>) -> Theme {
+        if let Some((r, g, b)) = accent {
+            self.pal.accent = Rgba::rgb(r, g, b);
+        }
+        if let Some((r, g, b)) = background {
+            self.pal = with_background(self.pal, Rgba::rgb(r, g, b));
+            self.dark = luminance(self.pal.bg) < 140.0;
+        }
+        self
+    }
+
+    /// 薄纱的厚薄：`foreground` 是 0..1，1 全不透明（页面色），0 全透
+    /// （只剩壁纸）。没有壁纸时页面色的 alpha 本来就是 255，涂了也看不见
+    /// （2026-11-28）。
+    pub fn veiled(mut self, foreground: f32, has_paper: bool) -> Theme {
+        let base = self.pal.bg;
+        self.veil = if has_paper {
+            base.with_alpha((foreground.clamp(0.0, 1.0) * 255.0).round() as u8)
+        } else {
+            base
+        };
+        self
     }
 
     /// This theme with every card as it shows behind a row held down.
@@ -179,6 +242,85 @@ impl Theme {
         t.hero.card = over(self.pal.row_press, self.hero.card);
         t
     }
+}
+
+/// 0..255 的亮度，用来判断一个底色该配深字还是浅字。
+fn luminance(c: Rgba) -> f32 {
+    0.2126 * f32::from(c.r) + 0.7152 * f32::from(c.g) + 0.0722 * f32::from(c.b)
+}
+
+/// 某个主题号的调色板（不用尺寸）：给「还没改过」的颜色取初值用。
+pub fn palette_of(id: u8) -> Palette {
+    match id {
+        1 => DARK,
+        2 => GLASS,
+        3 => DUSK,
+        _ => LIGHT,
+    }
+}
+
+/// 换页面底色：卡片、文字、箭头、状态栏都跟着底色的明暗翻一档。
+fn with_background(mut pal: Palette, bg: Rgba) -> Palette {
+    let dark = luminance(bg) < 140.0;
+    pal.bg = bg;
+    if dark {
+        pal.card = Rgba::rgb(30, 30, 34);
+        pal.text = Rgba::rgb(238, 238, 244);
+        pal.subtitle = Rgba::rgb(152, 154, 166);
+        pal.value = Rgba::rgb(120, 122, 136);
+        pal.section = Rgba::rgb(150, 156, 184);
+        pal.chevron = Rgba::rgb(96, 98, 116);
+        pal.search = Rgba::rgb(38, 38, 44);
+        pal.search_icon = Rgba::rgb(140, 142, 158);
+        pal.placeholder = Rgba::rgb(230, 232, 244).with_alpha(84);
+        pal.status = Rgba::rgb(230, 232, 244);
+        pal.info = Rgba::rgb(210, 212, 224);
+        pal.outline = Rgba::rgb(160, 164, 184);
+        pal.spec_label = Rgba::rgb(130, 134, 156);
+        pal.round = Rgba::rgb(44, 44, 52);
+        pal.round_mark = Rgba::rgb(140, 142, 160);
+        pal.updown = Rgba::rgb(70, 72, 92);
+        pal.popup = Rgba::rgb(42, 42, 50);
+        pal.mono_icon = Rgba::rgb(130, 134, 156);
+        pal.avatar = Rgba::rgb(60, 62, 76);
+        pal.avatar_glyph = Rgba::rgb(190, 194, 214);
+        pal.track = Rgba::rgb(46, 46, 56);
+        pal.switch_off = Rgba::rgb(60, 62, 74);
+        pal.badge = Rgba::rgb(40, 44, 62);
+        pal.danger_soft = Rgba::rgb(58, 32, 40);
+        pal.battery.level = Rgba::rgb(230, 234, 246).with_alpha(226);
+        pal.battery.empty = Rgba::rgb(230, 234, 246).with_alpha(92);
+        pal.battery.bolt = Rgba::rgb(230, 234, 246).with_alpha(200);
+    } else {
+        pal.card = Rgba::rgb(255, 255, 255);
+        pal.text = Rgba::rgb(20, 22, 28);
+        pal.subtitle = Rgba::rgb(96, 100, 112);
+        pal.value = Rgba::rgb(140, 146, 162);
+        pal.section = Rgba::rgb(108, 116, 140);
+        pal.chevron = Rgba::rgb(158, 164, 182);
+        pal.search = Rgba::rgb(232, 236, 244);
+        pal.search_icon = Rgba::rgb(118, 124, 142);
+        pal.placeholder = Rgba::rgb(30, 36, 52).with_alpha(84);
+        pal.status = Rgba::rgb(40, 44, 56);
+        pal.info = Rgba::rgb(60, 64, 78);
+        pal.outline = Rgba::rgb(96, 102, 122);
+        pal.spec_label = Rgba::rgb(118, 124, 144);
+        pal.round = Rgba::rgb(238, 240, 246);
+        pal.round_mark = Rgba::rgb(126, 132, 152);
+        pal.updown = Rgba::rgb(186, 192, 210);
+        pal.popup = Rgba::rgb(252, 253, 255);
+        pal.mono_icon = Rgba::rgb(150, 156, 176);
+        pal.avatar = Rgba::rgb(196, 206, 228);
+        pal.avatar_glyph = Rgba::rgb(255, 255, 255);
+        pal.track = Rgba::rgb(214, 218, 228);
+        pal.switch_off = Rgba::rgb(198, 202, 214);
+        pal.badge = Rgba::rgb(226, 234, 250);
+        pal.danger_soft = Rgba::rgb(250, 228, 228);
+        pal.battery.level = Rgba::rgb(24, 38, 70).with_alpha(206);
+        pal.battery.empty = Rgba::rgb(24, 38, 70).with_alpha(84);
+        pal.battery.bolt = Rgba::rgb(24, 38, 70).with_alpha(180);
+    }
+    pal
 }
 
 fn metrics(w: u32, h: u32, px_per_dp: f32) -> Metrics {
@@ -343,6 +485,88 @@ const DARK: Palette = Palette {
     shadow: Rgba::rgb(0, 0, 0).with_alpha(77),
 };
 
+/// 柔光：淡蓝底、透光白卡、蓝紫点缀（2026-11-28）。
+const GLASS: Palette = Palette {
+    bg: Rgba::rgb(226, 236, 250),
+    card: Rgba::rgb(255, 255, 255).with_alpha(224),
+    text: Rgba::rgb(24, 34, 58),
+    subtitle: Rgba::rgb(86, 102, 134),
+    value: Rgba::rgb(132, 148, 182),
+    section: Rgba::rgb(102, 128, 180),
+    chevron: Rgba::rgb(150, 169, 205),
+    accent: Rgba::rgb(66, 118, 238),
+    track: Rgba::rgb(200, 214, 240),
+    switch_off: Rgba::rgb(193, 206, 231),
+    search: Rgba::rgb(214, 226, 246).with_alpha(230),
+    search_icon: Rgba::rgb(118, 139, 181),
+    placeholder: Rgba::rgb(24, 40, 74).with_alpha(84),
+    badge: Rgba::rgb(218, 232, 254),
+    avatar: Rgba::rgb(186, 205, 238),
+    avatar_glyph: Rgba::rgb(255, 255, 255),
+    status: Rgba::rgb(48, 66, 104),
+    battery: BatteryInk {
+        charging: Rgba::rgb(29, 205, 58),
+        low: Rgba::rgb(230, 75, 59),
+        level: Rgba::rgb(24, 38, 70).with_alpha(206),
+        empty: Rgba::rgb(24, 38, 70).with_alpha(84),
+        bolt: Rgba::rgb(24, 38, 70).with_alpha(180),
+    },
+    mono_icon: Rgba::rgb(148, 167, 205),
+    danger: Rgba::rgb(226, 72, 68),
+    danger_soft: Rgba::rgb(250, 226, 226),
+    info: Rgba::rgb(48, 68, 110),
+    outline: Rgba::rgb(86, 104, 142),
+    spec_label: Rgba::rgb(112, 132, 172),
+    row_press: Rgba::rgb(46, 90, 180).with_alpha(28),
+    button_press: Rgba::rgb(46, 90, 180).with_alpha(24),
+    round: Rgba::rgb(226, 236, 252),
+    round_mark: Rgba::rgb(128, 149, 190),
+    updown: Rgba::rgb(184, 200, 230),
+    popup: Rgba::rgb(248, 251, 255).with_alpha(244),
+    shadow: Rgba::rgb(24, 48, 96).with_alpha(48),
+};
+
+/// 暗光：柔光的夜间版——近黑的深灰蓝底、透光灰蓝卡、蓝紫点缀（2026-11-28）。
+const DUSK: Palette = Palette {
+    bg: Rgba::rgb(20, 23, 31),
+    card: Rgba::rgb(38, 44, 60).with_alpha(226),
+    text: Rgba::rgb(232, 236, 246),
+    subtitle: Rgba::rgb(152, 160, 182),
+    value: Rgba::rgb(116, 126, 152),
+    section: Rgba::rgb(102, 114, 148),
+    chevron: Rgba::rgb(76, 84, 108),
+    accent: Rgba::rgb(112, 152, 242),
+    track: Rgba::rgb(42, 48, 64),
+    switch_off: Rgba::rgb(56, 62, 82),
+    search: Rgba::rgb(38, 44, 60).with_alpha(230),
+    search_icon: Rgba::rgb(128, 138, 166),
+    placeholder: Rgba::rgb(220, 226, 242).with_alpha(84),
+    badge: Rgba::rgb(38, 48, 76),
+    avatar: Rgba::rgb(58, 66, 88),
+    avatar_glyph: Rgba::rgb(190, 198, 220),
+    status: Rgba::rgb(218, 224, 240),
+    battery: BatteryInk {
+        charging: Rgba::rgb(29, 205, 58),
+        low: Rgba::rgb(230, 75, 59),
+        level: Rgba::rgb(230, 234, 246).with_alpha(226),
+        empty: Rgba::rgb(230, 234, 246).with_alpha(92),
+        bolt: Rgba::rgb(230, 234, 246).with_alpha(200),
+    },
+    mono_icon: Rgba::rgb(120, 130, 160),
+    danger: Rgba::rgb(255, 100, 94),
+    danger_soft: Rgba::rgb(58, 32, 40),
+    info: Rgba::rgb(206, 212, 232),
+    outline: Rgba::rgb(150, 160, 190),
+    spec_label: Rgba::rgb(124, 134, 166),
+    row_press: Rgba::rgb(160, 180, 235).with_alpha(30),
+    button_press: Rgba::rgb(160, 180, 235).with_alpha(26),
+    round: Rgba::rgb(42, 50, 70),
+    round_mark: Rgba::rgb(130, 142, 176),
+    updown: Rgba::rgb(60, 70, 96),
+    popup: Rgba::rgb(42, 50, 70),
+    shadow: Rgba::rgb(0, 0, 0).with_alpha(80),
+};
+
 // Sampled from the stock「我的设备」page: in light mode the cards are
 // the ordinary settings cards; in dark mode they are white at low opacity
 // over the field.
@@ -362,4 +586,24 @@ const DARK_HERO: Hero = Hero {
     title: Rgba::rgb(244, 245, 248),
     value: Rgba::rgb(157, 161, 188),
     chevron: Rgba::rgb(118, 122, 160),
+};
+
+/// 关于页在柔光主题下的那片流动色场：亮色的光晕，卡片改为淡蓝透光。
+const GLASS_HERO: Hero = Hero {
+    glow: &glow::GLASS,
+    version: Rgba::rgb(24, 34, 58).with_alpha(153),
+    card: Rgba::rgb(255, 255, 255).with_alpha(150),
+    title: Rgba::rgb(24, 34, 58),
+    value: Rgba::rgb(102, 120, 160),
+    chevron: Rgba::rgb(140, 160, 198),
+};
+
+/// 关于页在暗光主题下的流动色场：冷灰光晕、低透明灰蓝卡。
+const DUSK_HERO: Hero = Hero {
+    glow: &glow::DUSK,
+    version: Rgba::rgb(232, 236, 246).with_alpha(153),
+    card: Rgba::rgb(38, 46, 66).with_alpha(150),
+    title: Rgba::rgb(232, 236, 246),
+    value: Rgba::rgb(152, 162, 190),
+    chevron: Rgba::rgb(112, 124, 156),
 };

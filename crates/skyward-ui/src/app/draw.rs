@@ -537,7 +537,7 @@ impl App {
                 continue;
             }
             let lit = tile.lit(&self.state);
-            let fill = if lit { t.pal.accent.with_alpha(96) } else { white.with_alpha(18) };
+            let fill = if lit { t.pal.accent.with_alpha(96) } else { Self::tile_tint(&self.state) };
             out.fill_circle(cx, cy, disc / 2.0, fill);
             let ink = if lit { white } else { white.with_alpha(236) };
             Self::shade_glyph(out, &t, tile, lit, cx, cy, disc * 0.44, ink);
@@ -610,6 +610,8 @@ impl App {
                 // The control centre has no thermal slider: the battery's limit
                 // is set on the charge page, where the battery's own card is.
                 Slider::ThermalLimit => 0.0,
+                // 主题颜色页的那几根不在控制中心上。
+                _ => 0.0,
             }
             .clamp(0.0, 1.0);
             let cap = Rect::new(m.margin + col as f32 * (cap_w + gap), row, cap_w, cap_h);
@@ -645,6 +647,7 @@ impl App {
                         out.fill_round_rect(x - stroke * 0.5, my - h / 2.0, stroke, h, stroke * 0.5, ink);
                     }
                 }
+                _ => {}
             }
             hits.push((cap, hit));
         }
@@ -710,7 +713,7 @@ impl App {
         if let Some(drag) = self.shade_drag {
             let (cx, cy) = (drag.x, drag.y);
             let lit = drag.tile.lit(&self.state);
-            let fill = if lit { t.pal.accent.with_alpha(96) } else { Rgba::rgb(53, 53, 55) };
+            let fill = if lit { t.pal.accent.with_alpha(96) } else { Self::tile_tint(&self.state) };
             out.fill_circle(cx, cy, disc * 0.58, Rgba::rgb(0, 0, 0).with_alpha(60));
             out.fill_circle(cx, cy, disc / 2.0 * 1.08, fill);
             Self::shade_glyph(out, &t, drag.tile, lit, cx, cy, disc * 0.44 * 1.08, white);
@@ -718,7 +721,18 @@ impl App {
         self.shade_hits = hits;
     }
 
-    /// The mark a tile or a slider carries.
+    /// 关着的磁贴的底色：主人挑过就用他挑的那个，否则还是原来那点白
+/// （2026-11-28）。点亮的仍然用主色，两者互不干涉。
+fn tile_tint(state: &State) -> Rgba {
+    if state.tile_tint.is_some() {
+        let (r, g, b) = crate::app::tile_of(state.theme, state.tile_tint);
+        Rgba::rgb(r, g, b).with_alpha(210)
+    } else {
+        Rgba::rgb(255, 255, 255).with_alpha(18)
+    }
+}
+
+/// The mark a tile or a slider carries.
     fn shade_glyph(out: &mut Canvas, t: &Theme, tile: Tile, lit: bool, cx: f32, cy: f32, size: f32, ink: Rgba) {
         let m = &t.m;
         let stroke = (size * 0.075).max(m.dp(1.6));
@@ -934,7 +948,7 @@ impl App {
                 let back = self.turn.as_ref().expect("sliding").back;
                 if !back && at >= self.w as i32 {
                     let left = &self.turn.as_ref().expect("sliding").left;
-                    out.slide(left, left, at, shift, dim, self.corners);
+                    out.slide(left, left, at, shift, dim, self.corners, t.pal.bg);
                 } else {
                     let still = self.frame.as_ref().is_some_and(|fr| fr.hero.is_none());
                     let page = match self.layer.take() {
@@ -947,7 +961,7 @@ impl App {
                     };
                     let turn = self.turn.as_ref().expect("sliding");
                     let (front, behind) = if back { (&turn.left, &page) } else { (&page, &turn.left) };
-                    out.slide(front, behind, at, shift, dim, self.corners);
+                    out.slide(front, behind, at, shift, dim, self.corners, t.pal.bg);
                     self.layer = Some((view, page));
                 }
             }
@@ -992,6 +1006,9 @@ impl App {
                 out.fill_round_rect(r.x, r.y, r.w, r.h, radius, tint);
             }
         };
+        // 壁纸先备好：下面 titles 要可变借用 self，就不能再回头算它
+        // （2026-11-28）。
+        let paper = if t.veil.a < 255 { self.wallpaper_pixels(t) } else { None };
         let frame = self.frame.as_ref().expect("a page is drawn from its frame");
         let (_, big, small) = self.titles.as_mut().expect("a page's titles are drawn with it");
         // The row a finger holds darkens as part of the page, under what is
@@ -1027,16 +1044,26 @@ impl App {
             let h = out.h as f32;
             let span = frame.rows.as_ref().map(|r| ((r.edges[0] - offset).clamp(0.0, h), (r.bottom() - offset).clamp(0.0, h)));
             let (list_top, list_end) = span.unwrap_or((h, h));
+            // 有壁纸时页面是半透明的：先把壁纸铺满，再把页面的行按 alpha
+            // 叠上去，空白处用薄纱盖一层（2026-11-28）。
+            let veiled = t.veil.a < 255;
+            if let Some(px) = &paper {
+                out.paint_rgba_whole(px);
+            }
             let first = (-offset).clamp(0.0, h) as usize;
             let last = (frame.canvas.h as f32 - offset).clamp(first as f32, list_top) as usize;
             if first < last {
                 let from = offset as i32 + first as i32;
-                out.put_rows(&frame.canvas, from, from + (last - first) as i32, first as i32);
+                if veiled {
+                    out.over_rows(&frame.canvas, from, from + (last - first) as i32, first as i32);
+                } else {
+                    out.put_rows(&frame.canvas, from, from + (last - first) as i32, first as i32);
+                }
             }
-            out.fill_rect(0.0, 0.0, out.w as f32, first as f32, frame.bg);
-            out.fill_rect(0.0, last as f32, out.w as f32, list_top - last as f32, frame.bg);
+            out.blend_rect(0.0, 0.0, out.w as f32, first as f32, frame.bg);
+            out.blend_rect(0.0, last as f32, out.w as f32, list_top - last as f32, frame.bg);
             let below = list_end.max(last as f32);
-            out.fill_rect(0.0, below, out.w as f32, h - below, frame.bg);
+            out.blend_rect(0.0, below, out.w as f32, h - below, frame.bg);
             if let Some(rows) = &frame.rows {
                 // A long list's rows on screen, each drawn when it first
                 // shows. Those more than half a screen away are let go, and

@@ -181,10 +181,40 @@ impl App {
             }
             Action::Back | Action::CloseSearch => return self.back(now),
             Action::Theme { dark } => {
-                if self.state.dark != dark {
-                    self.state.dark = dark;
-                    self.refresh();
+                self.set_theme(if dark { 1 } else { 0 });
+            }
+            // —— 主题颜色页（2026-11-28）——
+            Action::ThemeTo(id) => self.set_theme(id),
+            Action::FoldPalette(at) => {
+                if let Some(open) = self.state.palette_open.get_mut(at) {
+                    *open = !*open;
                 }
+                self.refresh();
+            }
+            Action::WallpaperPick => {
+                self.list_wallpapers();
+                self.open(Screen::ThemeWallpapers);
+            }
+            Action::WallpaperClear => self.pick_wallpaper(None),
+            Action::WallpaperChoose(at) => {
+                let path = self.state.wallpaper_thumbs.get(at).map(|(path, _)| std::path::PathBuf::from(path));
+                if let Some(path) = path {
+                    self.pick_wallpaper(Some(path));
+                    return self.back(now);
+                }
+            }
+            Action::WallpaperReload => self.list_wallpapers(),
+            Action::AccentReset => {
+                self.state.accent = None;
+                self.refresh();
+            }
+            Action::BackgroundReset => {
+                self.state.background = None;
+                self.refresh();
+            }
+            Action::TileReset => {
+                self.state.tile_tint = None;
+                self.refresh();
             }
             // The switch moves at once; the runtime then tells how the WLAN
             // came up, or went off.

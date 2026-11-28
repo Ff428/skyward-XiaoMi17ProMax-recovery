@@ -251,6 +251,124 @@ impl Canvas {
         }
     }
 
+    /// 把一张 RGBA 缓冲铺进矩形：按短边铺满、居中裁切，`radius` 给四角
+    /// 圆角，`opacity` 是整体的不透明度（0..1）。缩略图、壁纸预览用它。
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_rgba(&mut self, x: f32, y: f32, w: f32, h: f32, rgba: &[u8], sw: u32, sh: u32, radius: f32, opacity: f32) {
+        if w <= 0.0 || h <= 0.0 || sw == 0 || sh == 0 || rgba.len() < (sw as usize * sh as usize * 4) {
+            return;
+        }
+        let (x0, x1) = self.columns(x.floor().max(0.0) as i32, (x + w).ceil().max(0.0) as i32);
+        let (y0, y1) = self.rows(y.floor().max(0.0) as i32, (y + h).ceil().max(0.0) as i32);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let scale = (w / sw as f32).max(h / sh as f32);
+        let cw = (w / scale).max(1.0);
+        let ch = (h / scale).max(1.0);
+        let ox = (sw as f32 - cw) * 0.5;
+        let oy = (sh as f32 - ch) * 0.5;
+        let r = radius.clamp(0.0, w.min(h) * 0.5);
+        let op = opacity.clamp(0.0, 1.0);
+        if op <= 0.0 {
+            return;
+        }
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let fx = px as f32 + 0.5 - x;
+                let fy = py as f32 + 0.5 - y;
+                let mut cov = 1.0;
+                if r > 0.0 {
+                    let dx = if fx < r { r - fx } else if fx > w - r { fx - (w - r) } else { 0.0 };
+                    let dy = if fy < r { r - fy } else if fy > h - r { fy - (h - r) } else { 0.0 };
+                    cov = (r - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0);
+                    if cov <= 0.0 {
+                        continue;
+                    }
+                }
+                let sx = (ox + fx / w * cw).clamp(0.0, sw as f32 - 1.0) as usize;
+                let sy = (oy + fy / h * ch).clamp(0.0, sh as f32 - 1.0) as usize;
+                let at = (sy * sw as usize + sx) * 4;
+                let a = (rgba[at + 3] as f32 / 255.0) * op * cov;
+                if a <= 0.0 {
+                    continue;
+                }
+                let color = Rgba { r: rgba[at], g: rgba[at + 1], b: rgba[at + 2], a: 255 };
+                self.blend(px, py, color, a);
+            }
+        }
+    }
+
+    /// 一整屏的图（尺寸与这张画布相同）：逐行拷进来，不做缩放。壁纸每帧
+    /// 走这条，只有 memcpy（2026-11-28）。
+    pub fn paint_rgba_whole(&mut self, rgba: &[u8]) {
+        let row = self.w as usize * 4;
+        if rgba.len() < row * self.h as usize {
+            return;
+        }
+        let n = self.span as usize * 4;
+        for y in self.top..self.bottom {
+            let src = y as usize * row + self.left as usize * 4;
+            let dst = self.at(self.left as i32, y as i32);
+            self.data[dst..dst + n].copy_from_slice(&rgba[src..src + n]);
+        }
+    }
+
+    /// 按 `color` 的 alpha 盖一层矩形：不透明时就是 `fill_rect`，半透明时
+    /// 底下那层（壁纸）透出来。
+    pub fn blend_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Rgba) {
+        if color.a == 255 {
+            return self.fill_rect(x, y, w, h, color);
+        }
+        if color.a == 0 || w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        let (x0, x1) = self.columns(x.floor().max(0.0) as i32, (x + w).ceil().max(0.0) as i32);
+        let (y0, y1) = self.rows(y.floor().max(0.0) as i32, (y + h).ceil().max(0.0) as i32);
+        for py in y0..y1 {
+            for px in x0..x1 {
+                self.blend(px, py, color, 1.0);
+            }
+        }
+    }
+
+    /// 把 `src` 的行按 alpha 叠到这张画布上：壁纸垫在最底下，页面画布是
+    /// 半透明的，最后合一次（2026-11-28）。
+    pub fn over_rows(&mut self, src: &Canvas, from: i32, to: i32, y: i32) {
+        assert_eq!(src.w, self.w, "the rows span the canvas");
+        assert!(self.whole(), "rows are put on a whole canvas");
+        let skip = (-from).max(0);
+        let (from, to, y) = (from + skip, to.min(src.h as i32), y + skip);
+        let n = (to - from).max(0);
+        let first = (-y).clamp(0, n);
+        let last = (self.h as i32 - y).clamp(first, n);
+        if first == last {
+            return;
+        }
+        let row = self.w as usize * 4;
+        for i in first..last {
+            let src_at = src.at(0, from + i);
+            let dst_at = (y + i) as usize * row;
+            let s = &src.data[src_at..src_at + row];
+            let d = &mut self.data[dst_at..dst_at + row];
+            for (sp, dp) in s.as_chunks::<4>().0.iter().zip(d.as_chunks_mut::<4>().0.iter_mut()) {
+                let a = u32::from(sp[3]);
+                if a == 0 {
+                    continue;
+                }
+                if a == 255 {
+                    *dp = [sp[0], sp[1], sp[2], 255];
+                    continue;
+                }
+                let inv = 255 - a;
+                for k in 0..3 {
+                    dp[k] = ((u32::from(sp[k]) * a + u32::from(dp[k]) * inv + 127) / 255) as u8;
+                }
+                dp[3] = 255;
+            }
+        }
+    }
+
     /// Paint rows `y0..y1` with a colour computed per pixel centre.
     pub fn shade_rows(&mut self, y0: u32, y1: u32, paint: impl Fn(f32, f32) -> Rgba) {
         let (y0, y1) = self.rows(y0 as i32, y1 as i32);
@@ -388,12 +506,16 @@ impl Canvas {
     /// (black laid over it, 0 to 1), and black past its right edge. Both
     /// pages are as big as this canvas, and each of its pixels is written
     /// once.
-    pub fn slide(&mut self, front: &Canvas, behind: &Canvas, at: i32, shift: i32, dim: f32, radius: f32) {
+    /// 两页合成：`front` 从 `at` 那一列起盖在 `behind` 上。`paper` 是两页
+    /// 之外（后一页还没进场的那几列）垫的底色——以前填黑，滑页时右边缘
+    /// 就闪一道黑（2026-11-28 修）。
+    pub fn slide(&mut self, front: &Canvas, behind: &Canvas, at: i32, shift: i32, dim: f32, radius: f32, paper: Rgba) {
         assert!((front.w, front.h) == (self.w, self.h) && (behind.w, behind.h) == (self.w, self.h), "the pages are one size");
         assert!(self.whole() && front.whole() && behind.whole(), "pages slide whole");
         let (w, h) = (self.w as i32, self.h as i32);
         let (at, shift) = (at.clamp(0, w), shift.clamp(0, w));
         let keep = ((1.0 - dim.clamp(0.0, 1.0)) * 256.0).round() as u32;
+        let pad = darken([paper.r, paper.g, paper.b, 255], keep);
         let row = w as usize * 4;
         // Left of the front page's edge only the page behind shows; at the
         // edge, where the front page's corners round off, both do. The page
@@ -409,7 +531,7 @@ impl Canvas {
             for (d, s) in line[..lit].iter_mut().zip(&back[shift as usize..]) {
                 *d = darken(*s, keep);
             }
-            line[lit..plain].fill([0, 0, 0, 255]);
+            line[lit..plain].fill(pad);
             let mut x = plain as i32;
             while x < w {
                 let cover = front_cover(x, y, at, h, radius);
@@ -417,7 +539,7 @@ impl Canvas {
                     break;
                 }
                 let k = x as usize;
-                let under = if k >= reach { [0, 0, 0, 255] } else { darken(back[k + shift as usize], keep) };
+                let under = if k >= reach { pad } else { darken(back[k + shift as usize], keep) };
                 // A pixel the front page covers at all lies right of its
                 // edge.
                 line[k] = if cover <= 0.0 {

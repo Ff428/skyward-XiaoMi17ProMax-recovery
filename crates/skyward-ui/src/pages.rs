@@ -98,6 +98,8 @@ pub fn render(screen: Screen, cx: &Ctx) -> Frame {
         Screen::EntryName => entry_name(cx),
         Screen::HomeTitle => home_title(cx),
         Screen::Layout => layout(cx),
+        Screen::ThemeColours => theme_colours(cx),
+        Screen::ThemeWallpapers => theme_wallpapers(cx),
         Screen::LayoutBrowse => layout_browse(cx),
         Screen::HomeSectionView => home_section_view(cx),
         Screen::FileTransfer => file_transfer(cx),
@@ -334,12 +336,12 @@ fn sheet(cx: &Ctx, h: u32, bg: Rgba) -> Canvas {
 }
 
 fn page(cx: &Ctx) -> Canvas {
-    sheet(cx, cx.t.m.h, cx.t.pal.bg)
+    sheet(cx, cx.t.m.h, cx.t.veil)
 }
 
 /// A canvas tall enough for a scrolling page; [`fit`] trims it to the content.
 fn long_page(cx: &Ctx) -> Canvas {
-    sheet(cx, cx.t.m.h * 3, cx.t.pal.bg)
+    sheet(cx, cx.t.m.h * 3, cx.t.veil)
 }
 
 /// 一页画布，高到装得下 `rows` 行内容：默认三屏，行多了按行高估一个上界（标题、
@@ -352,7 +354,7 @@ fn long_page_rows(cx: &Ctx, rows: usize) -> Canvas {
     let m = &cx.t.m;
     let wanted = m.content_top + (rows as f32 + 6.0) * m.row_h + m.margin * 2.0;
     let (least, most) = ((m.h * 3) as f32, (m.h * 6) as f32);
-    sheet(cx, wanted.max(least).min(most) as u32, cx.t.pal.bg)
+    sheet(cx, wanted.max(least).min(most) as u32, cx.t.veil)
 }
 
 /// How tall a long page whose content ends at `bottom` is: to the bottom
@@ -1473,7 +1475,16 @@ pub fn settings(cx: &Ctx) -> Frame {
     let top = t.m.content_top;
     let themes = widgets::theme_picker(&mut c, t, f, l, top + t.m.dp(8.9));
     out.extend(hits(&themes.rows, &[Action::Theme { dark: false }, Action::Theme { dark: true }]));
-    let mut y = widgets::section(&mut c, t, f, themes.bottom, l.pick(["亮度", "亮度", "Brightness"]));
+    // 四套主题、壁纸与三组颜色都在「主题颜色」那一页（2026-11-28）。
+    let colours = widgets::list(
+        &mut c,
+        t,
+        f,
+        themes.bottom + t.m.dp(4.0),
+        &[Row::new(l.pick(["主题颜色", "主題顏色", "Colours"])).icon(BLUE, Icon::Choose).trail(Trail::Arrow)],
+    );
+    out.extend(hits(&colours.rows, &[Action::Open(Screen::ThemeColours)]));
+    let mut y = widgets::section(&mut c, t, f, colours.bottom, l.pick(["亮度", "亮度", "Brightness"]));
     let off = fmt::screen_off(l, SCREEN_OFF[s.screen_off]);
     let below = Row::new(l.pick(SCREEN_TIMEOUT)).trail(Trail::Value(&off));
     let slider = widgets::slider_card(&mut c, t, f, y, Caption::Sun, l.pick(["屏幕亮度", "螢幕亮度", "Screen brightness"]), s.brightness, Some(below));
@@ -1499,6 +1510,251 @@ pub fn settings(cx: &Ctx) -> Frame {
     // 终端不在这里：同一个东西开两个入口反而添乱（2026-11-17）。关于与更新
     // 也一样，更新在首页底部单独一栏。
     Frame::new(t, fit(c, t, bottom), out, l.pick(SETTINGS), top)
+}
+
+/// 主题颜色页上一组的折叠标题：左边大字，右边一枚「展开／收起」的小字与
+/// 圆钮，整行都能点（2026-11-28 主人要求加提示）。
+#[allow(clippy::too_many_arguments)]
+fn palette_fold(c: &mut Canvas, t: &Theme, f: &Fonts, l: Lang, at: usize, title: &str, open: bool, y: f32, out: &mut Vec<Hit>) -> f32 {
+    let m = &t.m;
+    let label_top = y + m.section_label_top;
+    c.text(&f.heading, title, m.margin + m.dp(2.0), label_top + m.dp(6.0), m.dp(19.0), t.pal.section, None);
+    let d = m.dp(30.0);
+    let bx = m.w as f32 - m.margin - d / 2.0 - m.dp(2.0);
+    let cy = label_top + m.dp(6.0) - m.dp(7.0);
+    widgets::fold_button(c, t, bx, cy, d, !open);
+    let hint = if open {
+        l.pick(["收起", "收起", "Hide"])
+    } else {
+        l.pick(["展开", "展開", "Show"])
+    };
+    let px = m.dp(12.0);
+    let w = c.text_width(&f.body, hint, px);
+    c.text(&f.body, hint, bx - d / 2.0 - m.dp(8.0) - w, cy + px * 0.36, px, t.pal.subtitle, None);
+    out.push(Hit { rect: Rect::new(m.margin, cy - d / 2.0, m.w as f32 - m.margin * 2.0, d), action: Action::FoldPalette(at) });
+    y + m.section_block
+}
+
+/// 主题颜色：壁纸摆在最上面，下面是四套主题与三组颜色。壁纸那块与三组
+/// 颜色都能折起来，五根滑杆并进一张卡（2026-11-28，照 skyward-pudding
+/// v0.5.14 的口径）。
+pub fn theme_colours(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = m.content_top;
+
+    // —— 壁纸 ——
+    let wall_open = s.palette_open[3];
+    y = palette_fold(&mut c, t, f, l, 3, l.pick(["壁纸", "壁紙", "Wallpaper"]), wall_open, y, &mut out);
+    if let Some(paper) = &s.wallpaper_paper {
+        // 正方形预览：和挑图那一页的格子一个形状（2026-11-28）。
+        let side = (m.w as f32 - m.margin * 4.0).max(1.0);
+        c.fill_round_rect(m.margin * 2.0, y, side, side, m.card_radius, t.pal.search);
+        c.paint_rgba(m.margin * 2.0, y, side, side, &paper.rgba, paper.w, paper.h, m.card_radius, 1.0);
+        y += side + m.card_gap;
+    }
+    let has = s.wallpaper_file.is_some();
+    let mut rows = vec![Row::new(l.pick(["挑一张图", "挑一張圖", "Choose a picture"])).icon(PURPLE, Icon::Choose).trail(Trail::Arrow)];
+    if has {
+        rows.push(Row::new(l.pick(["去掉壁纸", "去掉壁紙", "No wallpaper"])).icon(SLATE, Icon::Wipe));
+    }
+    let pick = widgets::list(&mut c, t, f, y, &rows);
+    let acts: Vec<Action> = if has { vec![Action::WallpaperPick, Action::WallpaperClear] } else { vec![Action::WallpaperPick] };
+    out.extend(hits(&pick.rows, &acts));
+    y = pick.bottom;
+    if has && wall_open {
+        let (tracks, bottom) = widgets::slider_stack(
+            &mut c,
+            t,
+            f,
+            y + m.card_gap,
+            &[
+                (l.pick(["前景", "前景", "Foreground"]), s.foreground),
+                (l.pick(["压暗", "壓暗", "Dim"]), s.wallpaper_dim),
+                (l.pick(["缩放", "縮放", "Zoom"]), ((s.wallpaper_zoom - 1.0) / 3.0).clamp(0.0, 1.0)),
+                (l.pick(["左右", "左右", "Left / right"]), s.wallpaper_pan_x),
+                (l.pick(["上下", "上下", "Up / down"]), s.wallpaper_pan_y),
+            ],
+        );
+        for (track, which) in tracks.into_iter().zip([
+            Slider::Foreground,
+            Slider::WallpaperDim,
+            Slider::WallpaperZoom,
+            Slider::WallpaperPanX,
+            Slider::WallpaperPanY,
+        ]) {
+            out.push(Hit { rect: track, action: Action::Slider(which) });
+        }
+        y = bottom;
+    } else if !has {
+        y = widgets::footnote(
+            &mut c,
+            t,
+            f,
+            y,
+            l.pick([
+                "没有壁纸时，背景就是下面那个页面底色。",
+                "沒有壁紙時，背景就是下面那個頁面底色。",
+                "With no wallpaper the background is the page colour below.",
+            ]),
+        );
+    }
+
+    // —— 四套主题 ——
+    let label_top = y + m.card_gap * 2.0 + m.section_label_top;
+    c.text(&f.heading, l.pick(["主题", "主題", "Theme"]), m.margin + m.dp(2.0), label_top + m.dp(6.0), m.dp(19.0), t.pal.section, None);
+    y = label_top - m.section_label_top + m.section_block;
+    let names = [
+        l.pick(["亮色", "亮色", "Light"]),
+        l.pick(["深色", "深色", "Dark"]),
+        l.pick(["柔光", "柔光", "Glass"]),
+        l.pick(["暗光", "暗光", "Dusk"]),
+    ];
+    let rows: Vec<Row> = names.iter().enumerate().map(|(i, name)| Row::new(*name).trail(Trail::Check(usize::from(s.theme) == i))).collect();
+    let list = widgets::list(&mut c, t, f, y, &rows);
+    let acts: Vec<Action> = (0..4u8).map(Action::ThemeTo).collect();
+    out.extend(hits(&list.rows, &acts));
+    y = list.bottom;
+
+    // —— 三组颜色 ——
+    let (ar, ag, ab) = crate::app::accent_of(s.theme, s.accent);
+    let (br, bg, bb) = crate::app::background_of(s.theme, s.background);
+    let (tr, tg, tb) = crate::app::tile_of(s.theme, s.tile_tint);
+    let groups = [
+        (0usize, l.pick(["强调色", "強調色", "Accent"]), (ar, ag, ab), (Slider::AccentRed, Slider::AccentGreen, Slider::AccentBlue), Action::AccentReset),
+        (1, l.pick(["页面背景", "頁面背景", "Background"]), (br, bg, bb), (Slider::BackRed, Slider::BackGreen, Slider::BackBlue), Action::BackgroundReset),
+        (2, l.pick(["磁贴底色", "磁貼底色", "Tile background"]), (tr, tg, tb), (Slider::TileRed, Slider::TileGreen, Slider::TileBlue), Action::TileReset),
+    ];
+    for (at, title, (r, g, b), (sr, sg, sb), reset) in groups {
+        let open = s.palette_open.get(at).copied().unwrap_or(false);
+        y = palette_fold(&mut c, t, f, l, at, title, open, y + m.card_gap * 2.0, &mut out);
+        let sample = Rgba::rgb(r, g, b);
+        let card_w = m.w as f32 - m.margin * 2.0;
+        let pad = m.dp(12.0);
+        let band = m.dp(56.0);
+        let name_h = m.dp(26.0);
+        let gap = m.dp(6.0);
+        let foot_h = m.dp(36.0);
+        let body_h = if open { (name_h + m.slider_h + gap) * 3.0 + foot_h } else { 0.0 };
+        let card_h = pad * 2.0 + band + gap + body_h;
+        c.fill_round_rect(m.margin, y, card_w, card_h, m.card_radius, t.pal.card);
+        c.fill_round_rect(m.margin + pad, y + pad, card_w - pad * 2.0, band, m.dp(14.0), sample);
+        let shown = format!("R {r}   G {g}   B {b}");
+        // 色带上那三个数：底色亮就用深字，暗就用白字。
+        let lum = 0.2126 * f32::from(sample.r) + 0.7152 * f32::from(sample.g) + 0.0722 * f32::from(sample.b);
+        let ink = if lum > 150.0 { Rgba::rgb(20, 20, 24) } else { WHITE };
+        c.text(&f.heading, &shown, m.margin + pad + m.dp(12.0), y + pad + band * 0.66, m.dp(19.0), ink, None);
+        if !open {
+            out.push(Hit { rect: Rect::new(m.margin, y, card_w, card_h), action: Action::FoldPalette(at) });
+        } else {
+            let mut ry = y + pad + band + gap;
+            for (which, value) in [(sr, r), (sg, g), (sb, b)] {
+                ry += name_h;
+                let track = Rect::new(m.margin + pad, ry, card_w - pad * 2.0, m.slider_h);
+                widgets::slider(&mut c, t, track.x, track.y, track.w, f32::from(value) / 255.0);
+                out.push(Hit { rect: track, action: Action::Slider(which) });
+                ry += m.slider_h + gap;
+            }
+            let text = l.pick(["用主题自带的", "用主題自帶的", "Use the theme's own"]);
+            let tw = c.text_width(&f.body, text, m.dp(15.0));
+            c.text(&f.body, text, m.margin + card_w - pad - tw, ry + m.dp(24.0), m.dp(15.0), t.pal.accent, None);
+            out.push(Hit { rect: Rect::new(m.margin, ry, card_w, foot_h), action: reset });
+        }
+        y += card_h;
+    }
+
+    let note = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        y + m.dp(12.0),
+        l.pick([
+            "主色管开关、按钮、进度条和磁贴那些要点亮的地方；底色换掉后，卡片和文字会按亮度自动调，保证看得清。磁贴底色只管关着的那些磁贴。",
+            "主色管開關、按鈕、進度條和磁貼那些要點亮的地方；底色換掉後，卡片和文字會按亮度自動調，保證看得清。磁貼底色只管關著的那些磁貼。",
+            "The accent colours the switches, buttons, sliders and tiles that light up; change the background and the cards and text follow its lightness so they stay readable. The tile background only affects tiles that are off.",
+        ]),
+    );
+    Frame::new(t, fit(c, t, note), out, l.pick(["主题颜色", "主題顏色", "Colours"]), m.content_top)
+}
+
+/// 挑一张壁纸：壁纸文件夹里的图，正方形缩略图，选中的打勾。
+pub fn theme_wallpapers(cx: &Ctx) -> Frame {
+    let (t, f, s, l) = (cx.t, cx.f, cx.state, cx.state.lang);
+    let m = &t.m;
+    let mut c = long_page(cx);
+    let mut out = Vec::new();
+    let mut y = m.content_top;
+
+    // 文件夹那一行：整行点一下重新读一遍（路径本身在设置文件里，
+    // 想换文件夹就去改 `wallpaper_dir`）。
+    let dir = s.wallpaper_dir.clone();
+    let row = Row::new(&dir).icon(SLATE, Icon::Folder).trail(Trail::Arrow);
+    let list = widgets::list(&mut c, t, f, y, &[row]);
+    out.extend(hits(&list.rows, &[Action::WallpaperReload]));
+    y = list.bottom + m.card_gap;
+
+    match &s.wallpaper_files {
+        None => {
+            y = widgets::footnote(&mut c, t, f, y, l.pick(["正在读文件夹…", "正在讀資料夾…", "Reading the folder…"]));
+        }
+        Some(Err(why)) => {
+            y = widgets::footnote(&mut c, t, f, y, why);
+        }
+        Some(Ok(_)) if s.wallpaper_thumbs.is_empty() => {
+            y = widgets::footnote(
+                &mut c,
+                t,
+                f,
+                y,
+                l.pick([
+                    "这个文件夹里还没有图。往里放 jpg 或 png，再点上面那行重新读一遍。",
+                    "這個資料夾裡還沒有圖。往裡放 jpg 或 png，再點上面那行重新讀一遍。",
+                    "No pictures in this folder yet. Put jpg or png files in it, then tap the row above to read it again.",
+                ]),
+            );
+        }
+        Some(Ok(_)) => {
+            let cols = 3;
+            let gap = m.dp(10.0);
+            let cell = (m.w as f32 - m.margin * 2.0 - gap * (cols - 1) as f32) / cols as f32;
+            let mut at = 0usize;
+            while at < s.wallpaper_thumbs.len() {
+                for col in 0..cols {
+                    let Some((path, thumb)) = s.wallpaper_thumbs.get(at) else { break };
+                    let x = m.margin + col as f32 * (cell + gap);
+                    c.fill_round_rect(x, y, cell, cell, m.card_radius, t.pal.search);
+                    c.paint_rgba(x, y, cell, cell, &thumb.rgba, thumb.w, thumb.h, m.card_radius, 1.0);
+                    let chosen = s.wallpaper_file.as_deref() == Some(path.as_str());
+                    if chosen {
+                        // 选中的那格右下角一枚勾：底色用主色，勾是白的。
+                        let d = m.dp(26.0);
+                        let (cx0, cy0) = (x + cell - d - m.dp(8.0), y + cell - d - m.dp(8.0));
+                        c.fill_circle(cx0 + d / 2.0, cy0 + d / 2.0, d / 2.0, t.pal.accent);
+                        c.line(cx0 + d * 0.28, cy0 + d * 0.52, cx0 + d * 0.44, cy0 + d * 0.68, m.dp(2.4), WHITE);
+                        c.line(cx0 + d * 0.44, cy0 + d * 0.68, cx0 + d * 0.74, cy0 + d * 0.34, m.dp(2.4), WHITE);
+                    }
+                    out.push(Hit { rect: Rect::new(x, y, cell, cell), action: Action::WallpaperChoose(at) });
+                    at += 1;
+                }
+                y += cell + gap;
+            }
+        }
+    }
+
+    let note = widgets::footnote(
+        &mut c,
+        t,
+        f,
+        y,
+        l.pick([
+            "点一张就换上；压暗、缩放、左右上下和「前景」都在「主题颜色」那一页调。",
+            "點一張就換上；壓暗、縮放、左右上下和「前景」都在「主題顏色」那一頁調。",
+            "Tap one to use it; dim, zoom, pan and the foreground are on the Colours page.",
+        ]),
+    );
+    Frame::new(t, fit(c, t, note), out, l.pick(["挑一张图", "挑一張圖", "Choose a picture"]), m.content_top)
 }
 
 /// What the settings page says beside its Skyward update entry: an update

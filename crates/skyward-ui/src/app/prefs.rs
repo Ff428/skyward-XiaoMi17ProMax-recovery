@@ -14,6 +14,27 @@ pub enum Slider {
     /// How warm the battery may get before the charge is stepped down, in whole
     /// degrees Celsius from [`THERMAL_LIMIT_LEAST`] to [`THERMAL_LIMIT_MOST`].
     ThermalLimit,
+    /// 盖在壁纸上的那层薄纱有多实（2026-11-28）。
+    Foreground,
+    /// 壁纸压暗。
+    WallpaperDim,
+    /// 壁纸缩放：1.0 起，滑杆整条是 1..4。
+    WallpaperZoom,
+    /// 壁纸取哪一块。
+    WallpaperPanX,
+    WallpaperPanY,
+    /// 自定义主色的三个分量。
+    AccentRed,
+    AccentGreen,
+    AccentBlue,
+    /// 自定义页面底色的三个分量。
+    BackRed,
+    BackGreen,
+    BackBlue,
+    /// 磁贴底色的三个分量。
+    TileRed,
+    TileGreen,
+    TileBlue,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -421,12 +442,115 @@ impl App {
                 let span = f32::from(THERMAL_LIMIT_MOST - THERMAL_LIMIT_LEAST);
                 (f32::from(self.state.thermal_limit - THERMAL_LIMIT_LEAST) / span).clamp(0.0, 1.0)
             }
+            which => self.palette_level(which).unwrap_or(0.0),
+        }
+    }
+
+    /// 主题颜色页上的滑杆：主色 / 页面底色 / 磁贴底色各三个分量，加壁纸那五根。
+    fn palette_level(&self, which: Slider) -> Option<f32> {
+        let s = &self.state;
+        let (ar, ag, ab) = accent_of(s.theme, s.accent);
+        let (br, bg, bb) = background_of(s.theme, s.background);
+        let (tr, tg, tb) = tile_of(s.theme, s.tile_tint);
+        Some(match which {
+            Slider::Foreground => s.foreground,
+            Slider::WallpaperDim => s.wallpaper_dim,
+            Slider::WallpaperZoom => ((s.wallpaper_zoom - 1.0) / 3.0).clamp(0.0, 1.0),
+            Slider::WallpaperPanX => s.wallpaper_pan_x,
+            Slider::WallpaperPanY => s.wallpaper_pan_y,
+            Slider::AccentRed => f32::from(ar) / 255.0,
+            Slider::AccentGreen => f32::from(ag) / 255.0,
+            Slider::AccentBlue => f32::from(ab) / 255.0,
+            Slider::BackRed => f32::from(br) / 255.0,
+            Slider::BackGreen => f32::from(bg) / 255.0,
+            Slider::BackBlue => f32::from(bb) / 255.0,
+            Slider::TileRed => f32::from(tr) / 255.0,
+            Slider::TileGreen => f32::from(tg) / 255.0,
+            Slider::TileBlue => f32::from(tb) / 255.0,
+            _ => return None,
+        })
+    }
+
+    /// 主题颜色页上的一根滑杆被拖到 `level`（0..1）。
+    fn set_palette_level(&mut self, t: &Theme, which: Slider, track: Rect, level: f32) {
+        let lv = level.clamp(0.0, 1.0);
+        let byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        let mut reshape = false;
+        match which {
+            Slider::Foreground => self.state.foreground = lv,
+            Slider::WallpaperDim => self.state.wallpaper_dim = lv,
+            Slider::WallpaperZoom => {
+                self.state.wallpaper_zoom = 1.0 + lv * 3.0;
+                reshape = true;
+            }
+            Slider::WallpaperPanX => {
+                self.state.wallpaper_pan_x = lv;
+                reshape = true;
+            }
+            Slider::WallpaperPanY => {
+                self.state.wallpaper_pan_y = lv;
+                reshape = true;
+            }
+            Slider::AccentRed | Slider::AccentGreen | Slider::AccentBlue => {
+                let (mut r, mut g, mut b) = accent_of(self.state.theme, self.state.accent);
+                match which {
+                    Slider::AccentRed => r = byte(lv),
+                    Slider::AccentGreen => g = byte(lv),
+                    _ => b = byte(lv),
+                }
+                self.state.accent = Some((r, g, b));
+            }
+            Slider::BackRed | Slider::BackGreen | Slider::BackBlue => {
+                let (mut r, mut g, mut b) = background_of(self.state.theme, self.state.background);
+                match which {
+                    Slider::BackRed => r = byte(lv),
+                    Slider::BackGreen => g = byte(lv),
+                    _ => b = byte(lv),
+                }
+                self.state.background = Some((r, g, b));
+            }
+            Slider::TileRed | Slider::TileGreen | Slider::TileBlue => {
+                let (mut r, mut g, mut b) = tile_of(self.state.theme, self.state.tile_tint);
+                match which {
+                    Slider::TileRed => r = byte(lv),
+                    Slider::TileGreen => g = byte(lv),
+                    _ => b = byte(lv),
+                }
+                self.state.tile_tint = Some((r, g, b));
+            }
+            _ => {}
+        }
+        // 缩放与位置要按原图重新采样；拖动中间不重算，等松手（`settle_slider`）。
+        if reshape {
+            self.state.paper_dirty = true;
+        }
+        if let Some(fr) = self.frame.as_mut() {
+            fr.canvas.fill_rect(track.x, track.y, track.w, track.h, t.pal.card);
+            widgets::slider(&mut fr.canvas, t, track.x, track.y, track.w, lv);
+        }
+        self.layer = None;
+        self.dirty = true;
+    }
+
+    /// 滑杆松手：壁纸按新的缩放与位置重采样一次（拖动中间不重算，
+    /// 三百多万像素一采样就是一两百毫秒）。
+    pub(super) fn settle_slider(&mut self, which: Slider) {
+        if !matches!(which, Slider::WallpaperZoom | Slider::WallpaperPanX | Slider::WallpaperPanY) {
+            return;
+        }
+        if self.state.paper_dirty {
+            self.state.paper_dirty = false;
+            self.reshape_wallpaper();
         }
     }
 
     /// Set a slider to `level` of its span, the brightness no lower than
     /// its floor, and draw the slider at `track` on the page again.
     pub(super) fn set_level(&mut self, t: &Theme, which: Slider, track: Rect, level: f32) {
+        if !matches!(which, Slider::Brightness | Slider::Vibration | Slider::ThermalLimit) {
+            self.set_palette_level(t, which, track, level);
+            return;
+        }
         if which == Slider::ThermalLimit {
             // The limit is a whole degree, so the slider lands on one rather
             // than between two: the span is short, and half a degree either way
@@ -447,6 +571,7 @@ impl App {
             Slider::Brightness => &mut self.state.brightness,
             Slider::Vibration => &mut self.state.vibration,
             Slider::ThermalLimit => unreachable!("the battery's limit is set above"),
+            _ => unreachable!("the colours and the wallpaper are set above"),
         };
         *value = level.clamp(if which == Slider::Brightness { MIN_BRIGHTNESS } else { 0.0 }, 1.0);
         let value = *value;

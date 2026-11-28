@@ -1849,6 +1849,9 @@ impl<'a> Pages<'a> {
         let locale = request.locale.as_deref().or(info.locale.as_deref());
         let named = locale.map(Lang::for_locale).transpose()?;
         app.take_settings(kept.settings(), named);
+        // 壁纸在设置读进来之后解一次：以后每帧只是贴一张已经算好的图
+        // （2026-11-28）。
+        app.load_wallpaper();
         let keeper = Keeper::new(&kept);
         skyward_sys::kmsg(&format!(
             "the pages speak {:?}, {}, and the locale named is {}",
